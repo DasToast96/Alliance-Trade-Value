@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name        Nexus Legacy Alliance Trade Value
+// @name        Nexus Legacy Alliance Trade Value By DasToast
 // @namespace   nexuslegacy-alliance-tools
 // @description Annotates Alliance Trade orders with their value ratio under your own resource weights. Standalone — completely independent from the Market Value script.
 // @version     0.17.0
