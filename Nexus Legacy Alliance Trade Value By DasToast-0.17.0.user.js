@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name        Nexus Legacy Alliance Trade Value By DasToast
+// @name        Nexus Legacy Alliance Trade Value
 // @namespace   nexuslegacy-alliance-tools
 // @description Annotates Alliance Trade orders with their value ratio under your own resource weights. Standalone — completely independent from the Market Value script.
 // @version     0.17.0
@@ -49,6 +49,109 @@
   };
 
   const norm = (name) => (name || '').toLowerCase().replace(/[^a-z]/g, '');
+
+  // ---- language detection ----
+  // The page has an EN/DE language switcher (button.lang-btn, aria-label
+  // "English"/"Deutsch"). We read whichever button is marked active/current,
+  // fall back to <html lang="">, then to the browser's own language.
+  function computeLang() {
+    try {
+      const activeBtn = document.querySelector(
+        '.lang-btn.active, .lang-btn.is-active, .lang-btn[aria-pressed="true"], '
+        + '.lang-btn.selected, .lang-btn.current, .lang-btn[aria-current="true"]');
+      if (activeBtn) {
+        const label = (activeBtn.getAttribute('aria-label') || activeBtn.textContent || '').trim().toLowerCase();
+        if (label === 'deutsch' || label === 'german' || label === 'de') return 'de';
+        if (label === 'english' || label === 'en') return 'en';
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      const htmlLang = (document.documentElement.getAttribute('lang') || '').toLowerCase();
+      if (htmlLang.startsWith('de')) return 'de';
+      if (htmlLang.startsWith('en')) return 'en';
+    } catch (e) { /* ignore */ }
+    return (navigator.language || '').toLowerCase().startsWith('de') ? 'de' : 'en';
+  }
+
+  let LANG = computeLang();
+
+  const RESOURCE_LABELS = {
+    en: {
+      ore: 'Ore', silicates: 'Silicates', hydrogen: 'Hydrogen', alloys: 'Alloys',
+      bioextract: 'Bio Extract', cryoice: 'Cryo Ice', plasmacore: 'Plasma Core',
+      quantumdust: 'Quantum Dust', darkmatter: 'Dark Matter', antimatter: 'Antimatter',
+    },
+    de: {
+      ore: 'Erz', silicates: 'Silikate', hydrogen: 'Wasserstoff', alloys: 'Legierungen',
+      bioextract: 'Bioextrakt', cryoice: 'Kryo-Eis', plasmacore: 'Plasmakern',
+      quantumdust: 'Quantenstaub', darkmatter: 'Dunkle Materie', antimatter: 'Antimaterie',
+    },
+  };
+
+  const I18N = {
+    en: {
+      calcTitle: 'Fair Trade Calculator',
+      give: 'Give',
+      askExactly: 'ask for exactly',
+      amountToGive: 'amount to give',
+      amountToGet: 'amount to get',
+      pickDifferent: 'pick two different resources',
+      noWeightRate: 'no weight set for one of these — check the userscript menu',
+      fairRate: (giveLabel, val, getLabel) => `fair rate  1 ${giveLabel} = ${val} ${getLabel}`,
+      unrounded: (v) => `unrounded: ${v}`,
+      justCalculating: "Just calculating? Don't open a new Order or cancel the order.",
+      noAutoFill: "Calculator won't auto-fill this field.*",
+      ratios: 'Ratios',
+      ratiosTooltip: 'These are the default ratios used to value trades. Type a number to override.',
+      weightPillTitle: (label, def) => `${label} — blank use the default (${def})`,
+      noWeightPillTitle: (missing) => `No weight set for "${missing}" — add it via the userscript menu.`,
+      scamLabel: 'SCAMMER',
+      scamTitle: 'Fun fact: this order pays well under fair value.',
+      youWereBuyer: 'You were the buyer on this trade.',
+      buyerTitle: (delta, equivGive, giveResource) =>
+        `buyer ${delta >= 0 ? 'profit' : 'loss'} ${delta >= 0 ? '+' : ''}${fmt(delta)} value\n`
+        + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGive).toLocaleString()} ${giveResource} `
+        + `worth of ${delta >= 0 ? 'savings' : 'overpayment'}, in what you actually paid with`,
+      menuCommand: 'Set alliance trade resource weights',
+      promptText: 'Resource weight OVERRIDES as JSON (value per unit, relative to Ore=1).\n'
+        + 'Only include resources you want to override — anything omitted uses\n'
+        + 'the built-in default:',
+      invalidJson: 'Invalid JSON: ',
+    },
+    de: {
+      calcTitle: 'Fairer-Handel-Rechner',
+      give: 'Geben',
+      askExactly: 'verlangen genau',
+      amountToGive: 'Menge zum Geben',
+      amountToGet: 'Menge zum Erhalten',
+      pickDifferent: 'zwei unterschiedliche Ressourcen wählen',
+      noWeightRate: 'für eine davon ist kein Gewicht gesetzt — im Userscript-Menü prüfen',
+      fairRate: (giveLabel, val, getLabel) => `fairer Kurs  1 ${giveLabel} = ${val} ${getLabel}`,
+      unrounded: (v) => `ungerundet: ${v}`,
+      justCalculating: 'Nur am Rechnen? Keine neue Order öffnen oder die Order stornieren.',
+      noAutoFill: 'Der Rechner füllt dieses Feld nicht automatisch aus.*',
+      ratios: 'Verhältnisse',
+      ratiosTooltip: 'Das sind die Standard-Verhältnisse zur Bewertung von Trades. Zahl eingeben zum Überschreiben.',
+      weightPillTitle: (label, def) => `${label} — leer lassen für den Standardwert (${def})`,
+      noWeightPillTitle: (missing) => `Kein Gewicht für "${missing}" gesetzt — über das Userscript-Menü hinzufügen.`,
+      scamLabel: 'ABZOCKER',
+      scamTitle: 'Nur zum Spaß: diese Order zahlt deutlich unter fairem Wert.',
+      youWereBuyer: 'Du warst der Käufer in diesem Trade.',
+      buyerTitle: (delta, equivGive, giveResource) =>
+        `Käufer-${delta >= 0 ? 'Gewinn' : 'Verlust'} ${delta >= 0 ? '+' : ''}${fmt(delta)} Wert\n`
+        + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGive).toLocaleString()} ${giveResource} `
+        + `${delta >= 0 ? 'Ersparnis' : 'Überzahlung'}, in dem was du tatsächlich bezahlt hast`,
+      menuCommand: 'Alliance-Trade-Ressourcengewichte festlegen',
+      promptText: 'Ressourcengewicht-ÜBERSCHREIBUNGEN als JSON (Wert pro Einheit, relativ zu Erz=1).\n'
+        + 'Nur Ressourcen angeben, die überschrieben werden sollen — alles andere\n'
+        + 'nutzt den eingebauten Standard:',
+      invalidJson: 'Ungültiges JSON: ',
+    },
+  };
+  const t = (key, ...args) => {
+    const entry = I18N[LANG][key];
+    return typeof entry === 'function' ? entry(...args) : entry;
+  };
 
   const WEIGHTS_KEY = 'nexusAllianceTradeWeights';
 
@@ -102,18 +205,15 @@
     syncWeightsPanelInputs();
   }
 
-  GM_registerMenuCommand('Set alliance trade resource weights', () => {
+  GM_registerMenuCommand(t('menuCommand'), () => {
     const cur = JSON.stringify(overrides(), null, 0);
-    const next = prompt(
-      'Resource weight OVERRIDES as JSON (value per unit, relative to Ore=1).\n'
-      + 'Only include resources you want to override — anything omitted uses\n'
-      + 'the built-in default:', cur);
+    const next = prompt(t('promptText'), cur);
     if (next === null) return;
     try {
       const parsed = JSON.parse(next); // validate
       saveOverrides(parsed);
       refreshAfterWeightChange();
-    } catch (e) { alert('Invalid JSON: ' + e.message); }
+    } catch (e) { alert(t('invalidJson') + e.message); }
   });
 
   // ---- parsing (alliance-trade rows only) ----
@@ -175,7 +275,7 @@
       const missing = wGive == null ? give.resource : get.resource;
       const pill = document.createElement('span');
       pill.textContent = `? ${missing}`;
-      pill.title = `No weight set for "${missing}" — add it via the userscript menu.`;
+      pill.title = t('noWeightPillTitle', missing);
       pill.style.cssText = PILL + ';color:#94a3b8;border-color:#475569';
       wrap.appendChild(pill);
     } else {
@@ -183,13 +283,9 @@
       const getVal = get.amount * wGet;
       const ratio = giveVal > 0 ? getVal / giveVal : 0;
       const delta = getVal - giveVal;  // buyer's (filler's) profit/loss vs. ×1.00
-      const pct = (ratio - 1) * 100;   // same, expressed as a percentage — the headline number
       const color = colorFor(ratio);
       const equivGive = delta / wGive;  // delta converted back into give-resource units
-      const title =
-        `buyer ${delta >= 0 ? 'profit' : 'loss'} ${delta >= 0 ? '+' : ''}${fmt(delta)} value\n`
-        + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGive).toLocaleString()} ${give.resource} `
-        + `worth of ${delta >= 0 ? 'savings' : 'overpayment'}, in what you actually paid with`;
+      const title = t('buyerTitle', delta, equivGive, give.resource);
 
       // headline pills: ×ratio (solid) + profit/loss as % (outline). Absolute
       // value and the resource-equivalent are still one hover away in the
@@ -201,7 +297,7 @@
       ratioPill.title = title;
 
       const pctPill = document.createElement('span');
-      pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
+      pctPill.textContent = `${equivGive >= 0 ? '+' : ''}${fmt(equivGive)}`;
       pctPill.style.cssText = PILL
         + `;color:${color};background:transparent;border-color:${color}`;
       pctPill.title = title;
@@ -212,8 +308,8 @@
       // gets called out with an extra "SCAMMER" field, just for laughs.
       if (color === '#f87171') {
         const scamPill = document.createElement('span');
-        scamPill.textContent = 'SCAMMER';
-        scamPill.title = 'Fun fact: this order pays well under fair value.';
+        scamPill.textContent = t('scamLabel');
+        scamPill.title = t('scamTitle');
         scamPill.style.cssText = PILL
           + ';color:#f87171;background:transparent;border-color:#f87171;font-weight:800';
         wrap.appendChild(scamPill);
@@ -269,13 +365,9 @@
     const getVal = get.amount * wGet;
     const ratio = giveVal > 0 ? getVal / giveVal : 0;
     const delta = getVal - giveVal;  // buyer's (filler's) profit/loss vs. ×1.00
-    const pct = (ratio - 1) * 100;   // same, expressed as a percentage — the headline number
     const color = colorFor(ratio);
     const equivGive = delta / wGive;  // delta converted back into give-resource units
-    const title =
-      `buyer ${delta >= 0 ? 'profit' : 'loss'} ${delta >= 0 ? '+' : ''}${fmt(delta)} value\n`
-      + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGive).toLocaleString()} ${give.resource} `
-      + `worth of ${delta >= 0 ? 'savings' : 'overpayment'}, in what you actually paid with`;
+    const title = t('buyerTitle', delta, equivGive, give.resource);
 
     const wrap = document.createElement('span');
     wrap.className = 'nxa-history-badge';
@@ -292,7 +384,7 @@
     ratioPill.title = title;
 
     const pctPill = document.createElement('span');
-    pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
+    pctPill.textContent = `${equivGive >= 0 ? '+' : ''}${fmt(equivGive)}`;
     pctPill.style.cssText = PILL
       + `;color:${color};background:transparent;border-color:${color}`;
     pctPill.title = title;
@@ -313,7 +405,7 @@
       const marker = document.createElement('span');
       marker.className = 'nxa-you-marker';
       marker.textContent = ' 🙋';
-      marker.title = 'You were the buyer on this trade.';
+      marker.title = t('youWereBuyer');
       marker.style.cssText = `${FONT};color:#4ade80`;
       partySpan.appendChild(marker);
     }
@@ -334,17 +426,9 @@
   // ====================================================================
 
   const RESOURCES = [
-    { key: 'ore', label: 'Ore' },
-    { key: 'silicates', label: 'Silicates' },
-    { key: 'hydrogen', label: 'Hydrogen' },
-    { key: 'alloys', label: 'Alloys' },
-    { key: 'bioextract', label: 'Bio Extract' },
-    { key: 'cryoice', label: 'Cryo Ice' },
-    { key: 'plasmacore', label: 'Plasma Core' },
-    { key: 'quantumdust', label: 'Quantum Dust' },
-    { key: 'darkmatter', label: 'Dark Matter' },
-    { key: 'antimatter', label: 'Antimatter' },
-  ];
+    'ore', 'silicates', 'hydrogen', 'alloys', 'bioextract',
+    'cryoice', 'plasmacore', 'quantumdust', 'darkmatter', 'antimatter',
+  ].map((key) => ({ key, label: RESOURCE_LABELS[LANG][key] }));
   const resLabel = (k) => (RESOURCES.find((r) => r.key === k) || {}).label || k;
 
   // Reuse the game's own resource icons wherever they already appear on the
@@ -410,18 +494,16 @@
     let getKey = 'silicates';
 
     const giveAmount = h('input', { type: 'number', min: '0', step: 'any',
-      placeholder: 'amount to give', style: `${FIELD};width:130px` });
+      placeholder: t('amountToGive'), style: `${FIELD};width:130px` });
     const getOutput = h('input', { type: 'text', readonly: 'true',
-      placeholder: 'amount to get', style: `${FIELD};width:150px;color:#4ade80` });
+      placeholder: t('amountToGet'), style: `${FIELD};width:150px;color:#4ade80` });
     const rateNote = h('span', { style: `${FONT};color:#64748b` }, '');
     const warnNote = h('div', { style: 'display:flex;align-items:flex-start;gap:6px' },
       h('span', { style: `${FONT};color:#38bdf8;font-weight:900` }, '!'),
-      h('span', { style: `${FONT};color:#64748b` },
-        "Just calculating? Don't open a new Order or cancel the order."));
+      h('span', { style: `${FONT};color:#64748b` }, t('justCalculating')));
     const wantHintNote = h('div', { style: 'display:flex;align-items:flex-start;gap:6px' },
       h('span', { style: `${FONT};color:#38bdf8;font-weight:900` }, '!'),
-      h('span', { style: `${FONT};color:#64748b` },
-        "Calculator won't auto-fill this field.*"));
+      h('span', { style: `${FONT};color:#64748b` }, t('noAutoFill')));
 
     function recalc() {
       const w = weights();
@@ -430,23 +512,23 @@
 
       if (giveKey === getKey) {
         getOutput.value = '';
-        rateNote.textContent = 'pick two different resources';
+        rateNote.textContent = t('pickDifferent');
         return;
       }
       if (wGive == null || wGet == null) {
         getOutput.value = '';
-        rateNote.textContent = 'no weight set for one of these — check the userscript menu';
+        rateNote.textContent = t('noWeightRate');
         return;
       }
 
       const fair = wGive / wGet;  // units of `get` per unit of `give`, at ×1.00
-      rateNote.textContent = `fair rate  1 ${resLabel(giveKey)} = ${fair.toFixed(3)} ${resLabel(getKey)}`;
+      rateNote.textContent = t('fairRate', resLabel(giveKey), fair.toFixed(3), resLabel(getKey));
 
       const amt = Number(giveAmount.value);
       if (!(amt > 0)) { getOutput.value = ''; return; }
       const exact = amt * fair;
       getOutput.value = String(Math.round(exact));
-      getOutput.title = `unrounded: ${exact.toFixed(3)}`;
+      getOutput.title = t('unrounded', exact.toFixed(3));
     }
 
     const giveSel = resSelect(giveKey, () => { giveKey = giveSel.value; recalc(); });
@@ -477,15 +559,15 @@
     recalc();
 
     const leftCol = h('div', { style: 'flex:1;min-width:260px' },
-      h('div', { style: `${FONT};color:#e2e8f0` }, 'Fair Trade Calculator'),
+      h('div', { style: `${FONT};color:#e2e8f0` }, t('calcTitle')),
       h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' },
-        h('span', { style: `${FONT};color:#94a3b8` }, 'Give'),
+        h('span', { style: `${FONT};color:#94a3b8` }, t('give')),
         giveAmount, giveSel,
         h('span', { style: `${FONT};color:#38bdf8;font-weight:800` }, '⇄'),
-        h('span', { style: `${FONT};color:#94a3b8` }, 'ask for exactly'),
+        h('span', { style: `${FONT};color:#94a3b8` }, t('askExactly')),
         getOutput, getSel),
       h('div', { style: 'margin-top:6px' }, rateNote),
-      h('div', { style: 'margin-top:12px;padding-top:8px;border-top:1px solid #1e3a52;'
+      h('div', { style: 'margin-top:15px;padding-top:8px;border-top:1px solid #1e3a52;'
         + 'display:flex;flex-direction:column;gap:5px' },
         warnNote,
         wantHintNote));
@@ -529,7 +611,7 @@
       value: cur != null ? String(cur) : '',
       style: `${FONT};background:transparent;border:none;outline:none;width:38px;`
         + 'padding:0;color:#f1f5f9;font-weight:800;font-size:15px',
-      title: `${r.label} — blank use the default (${def})`,
+      title: t('weightPillTitle', r.label, def),
     });
 
     let debounce = null;
@@ -548,7 +630,7 @@
     weightInputsByKey[r.key] = input;
 
     return h('span', {
-      title: `${r.label} — blank use the default (${def})`,
+      title: t('weightPillTitle', r.label, def),
       style: 'display:flex;align-items:center;justify-content:center;gap:4px;'
         + 'background:#0f1b2e;border:1px solid #1e3a52;border-radius:999px;'
         + 'padding:2px 8px;box-sizing:border-box',
@@ -559,9 +641,9 @@
     weightInputsByKey = {};
     return h('div', { style: 'flex:none;width:290px' },
       h('div', { style: 'display:flex;align-items:center;justify-content:center;gap:6px', title:
-        'These are the default ratios used to value trades. Type a number to override.' },
+        t('ratiosTooltip') },
         h('span', { style: 'font-size:16px;color:#38bdf8' }, '⚖'),
-        h('span', { style: `${FONT};color:#e2e8f0;font-size:13px;font-weight:800` }, 'Ratios')),
+        h('span', { style: `${FONT};color:#e2e8f0;font-size:13px;font-weight:800` }, t('ratios'))),
       h('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:6px' },
         ...RESOURCES.map((r) => buildWeightPill(r))));
   }
@@ -622,11 +704,15 @@
 
   // Real markup: <form class="market-create-form"><div class="market-form-row">
   // <label>I offer</label><select>…</select><input type="number" …></div>…
-  function findFormRow(root, labelText) {
+  // labelTexts may be a string or an array of candidate strings (e.g. the
+  // game's own EN/DE label variants) — the first row matching any of them wins.
+  function findFormRow(root, labelTexts) {
+    const candidates = (Array.isArray(labelTexts) ? labelTexts : [labelTexts])
+      .map((s) => s.toLowerCase());
     const rows = root.querySelectorAll('form.market-create-form .market-form-row');
     for (const row of rows) {
       const label = row.querySelector('label');
-      if (label && label.textContent.trim().toLowerCase() === labelText.toLowerCase()) return row;
+      if (label && candidates.includes(label.textContent.trim().toLowerCase())) return row;
     }
     return null;
   }
