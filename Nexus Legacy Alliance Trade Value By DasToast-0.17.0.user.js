@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade orders with their value ratio under your own resource weights. Standalone — completely independent from the Market Value script.
-// @version     0.18.0
+// @version     0.23.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -13,10 +13,10 @@
 // ==/UserScript==
 
 /*
- * Standalone display tool for the ALLIANCE TRADE tab only — separate script,
- * separate namespace, separate storage. No network, no token, no polling, no
- * alerts. Parses the alliance-trade DOM client-side and annotates each order
- * row in place.
+ * Display tool for the Alliance Trade tab, the regular Market's Browse tab,
+ * and My Orders — separate namespace, separate storage. No network, no
+ * token, no polling, no alerts. Parses the market DOM client-side and
+ * annotates each order row in place.
  *
  * Each Alliance Trade order is "you GIVE the request, you GET the offer".
  * Alliance Trade has no hub fee (0% commission), so the value you get is
@@ -100,8 +100,7 @@
       noWeightRate: 'no weight set for one of these — check the userscript menu',
       fairRate: (giveLabel, val, getLabel) => `fair rate  1 ${giveLabel} = ${val} ${getLabel}`,
       unrounded: (v) => `unrounded: ${v}`,
-      justCalculating: "Just calculating? Don't open a new Order or cancel the order.",
-      noAutoFill: "Calculator won't auto-fill this field.*",
+      justCalculating: "Calculator won't automate anything.",
       ratios: 'Ratios',
       ratiosTooltip: 'These are the default ratios used to value trades. Type a number to override.',
       weightPillTitle: (label, def) => `${label} — blank use the default (${def})`,
@@ -109,10 +108,14 @@
       scamLabel: 'SCAMMER',
       scamTitle: 'Fun fact: this order pays well under fair value.',
       youWereBuyer: 'You were the buyer on this trade.',
-      buyerTitle: (delta, equivGive, giveResource) =>
+      buyerTitle: (delta, equivGet, getResource) =>
         `buyer ${delta >= 0 ? 'profit' : 'loss'} ${delta >= 0 ? '+' : ''}${fmt(delta)} value\n`
-        + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGive).toLocaleString()} ${giveResource} `
-        + `worth of ${delta >= 0 ? 'savings' : 'overpayment'}, in what you actually paid with`,
+        + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGet).toLocaleString()} ${getResource} `
+        + `${delta >= 0 ? 'more' : 'less'} than fair value`,
+      sellerTitle: (delta, equivGet, getResource) =>
+        `seller ${delta >= 0 ? 'profit' : 'loss'} ${delta >= 0 ? '+' : ''}${fmt(delta)} value\n`
+        + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGet).toLocaleString()} ${getResource} `
+        + `${delta >= 0 ? 'more' : 'less'} than fair value`,
       menuCommand: 'Set alliance trade resource weights',
       promptText: 'Resource weight OVERRIDES as JSON (value per unit, relative to Ore=1).\n'
         + 'Only include resources you want to override — anything omitted uses\n'
@@ -129,8 +132,7 @@
       noWeightRate: 'für eine davon ist kein Gewicht gesetzt — im Userscript-Menü prüfen',
       fairRate: (giveLabel, val, getLabel) => `fairer Kurs  1 ${giveLabel} = ${val} ${getLabel}`,
       unrounded: (v) => `ungerundet: ${v}`,
-      justCalculating: 'Nur am Rechnen? Keine neue Order öffnen oder die Order stornieren.',
-      noAutoFill: 'Der Rechner füllt dieses Feld nicht automatisch aus.*',
+      justCalculating: 'Der Rechner automatisiert nichts.',
       ratios: 'Verhältnisse',
       ratiosTooltip: 'Das sind die Standard-Verhältnisse zur Bewertung von Trades. Zahl eingeben zum Überschreiben.',
       weightPillTitle: (label, def) => `${label} — leer lassen für den Standardwert (${def})`,
@@ -138,10 +140,14 @@
       scamLabel: 'ABZOCKER',
       scamTitle: 'Nur zum Spaß: diese Order zahlt deutlich unter fairem Wert.',
       youWereBuyer: 'Du warst der Käufer in diesem Trade.',
-      buyerTitle: (delta, equivGive, giveResource) =>
+      buyerTitle: (delta, equivGet, getResource) =>
         `Käufer-${delta >= 0 ? 'Gewinn' : 'Verlust'} ${delta >= 0 ? '+' : ''}${fmt(delta)} Wert\n`
-        + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGive).toLocaleString()} ${giveResource} `
-        + `${delta >= 0 ? 'Ersparnis' : 'Überzahlung'}, in dem was du tatsächlich bezahlt hast`,
+        + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGet).toLocaleString()} ${getResource} `
+        + `${delta >= 0 ? 'mehr' : 'weniger'} als der faire Wert`,
+      sellerTitle: (delta, equivGet, getResource) =>
+        `Verkäufer-${delta >= 0 ? 'Gewinn' : 'Verlust'} ${delta >= 0 ? '+' : ''}${fmt(delta)} Wert\n`
+        + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGet).toLocaleString()} ${getResource} `
+        + `${delta >= 0 ? 'mehr' : 'weniger'} als der faire Wert`,
       menuCommand: 'Alliance-Trade-Ressourcengewichte festlegen',
       promptText: 'Ressourcengewicht-ÜBERSCHREIBUNGEN als JSON (Wert pro Einheit, relativ zu Erz=1).\n'
         + 'Nur Ressourcen angeben, die überschrieben werden sollen — alles andere\n'
@@ -251,9 +257,11 @@
     + 'font:600 11px/1.6 "JetBrains Mono",monospace;white-space:nowrap';
 
   function annotateRow(row) {
-    // safety guard — this script must never touch a row outside Alliance
-    // Trade, even if annotateAll()'s own selector were ever loosened.
-    if (!row.closest('.alliance-trade-tab')) return;
+    // safety guard — this script only ever touches Alliance Trade rows and
+    // the regular Market's Browse tab (both share the same row markup),
+    // never anything else, even if annotateAll()'s own selector were
+    // ever loosened.
+    if (!row.closest('.alliance-trade-tab') && !row.closest('.market-browse')) return;
 
     row.querySelectorAll('.nxa-value-badge').forEach((b) => b.remove());
 
@@ -285,8 +293,8 @@
       const ratio = giveVal > 0 ? getVal / giveVal : 0;
       const delta = getVal - giveVal;  // buyer's (filler's) profit/loss vs. ×1.00
       const color = colorFor(ratio);
-      const equivGive = delta / wGive;  // delta converted back into give-resource units
-      const title = t('buyerTitle', delta, equivGive, give.resource);
+      const equivGet = delta / wGet;  // delta expressed as extra/less of the received resource
+      const title = t('buyerTitle', delta, equivGet, get.resource);
 
       // headline pills: ×ratio (solid) + profit/loss as % (outline). Absolute
       // value and the resource-equivalent are still one hover away in the
@@ -298,7 +306,7 @@
       ratioPill.title = title;
 
       const pctPill = document.createElement('span');
-      pctPill.textContent = `${equivGive >= 0 ? '+' : ''}${fmt(equivGive)}`;
+      pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
       pctPill.style.cssText = PILL
         + `;color:${color};background:transparent;border-color:${color}`;
       pctPill.title = title;
@@ -326,7 +334,9 @@
   }
 
   function annotateAll() {
-    document.querySelectorAll('.alliance-trade-tab .market-order-row').forEach((row) => {
+    document.querySelectorAll(
+      '.alliance-trade-tab .market-order-row, .market-browse .market-order-row',
+    ).forEach((row) => {
       annotateRow(row);
     });
   }
@@ -367,8 +377,8 @@
     const ratio = giveVal > 0 ? getVal / giveVal : 0;
     const delta = getVal - giveVal;  // buyer's (filler's) profit/loss vs. ×1.00
     const color = colorFor(ratio);
-    const equivGive = delta / wGive;  // delta converted back into give-resource units
-    const title = t('buyerTitle', delta, equivGive, give.resource);
+    const equivGet = delta / wGet;  // delta expressed as extra/less of the received resource
+    const title = t('buyerTitle', delta, equivGet, get.resource);
 
     const wrap = document.createElement('span');
     wrap.className = 'nxa-history-badge';
@@ -385,7 +395,7 @@
     ratioPill.title = title;
 
     const pctPill = document.createElement('span');
-    pctPill.textContent = `${equivGive >= 0 ? '+' : ''}${fmt(equivGive)}`;
+    pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
     pctPill.style.cssText = PILL
       + `;color:${color};background:transparent;border-color:${color}`;
     pctPill.title = title;
@@ -415,6 +425,84 @@
   function annotateHistory() {
     document.querySelectorAll('.market-trade-history .market-trade-row').forEach((row) => {
       annotateHistoryRow(row);
+    });
+  }
+
+  // ====================================================================
+  //  My Orders value badges
+  //  Your own posted orders on the regular Market's "My Orders" tab. Unlike
+  //  the live-order/history badges above (valued from the buyer/filler's
+  //  side), here YOU are the creator, so the perspective flips: the first
+  //  amount is what you're asking for (shown as "filled/total", we use the
+  //  total), the second is what you offer in exchange for it.
+  //
+  //  Real markup: .market-my-orders > .market-my-order-row, each holding
+  //  exactly two .market-resource-amount spans in order — ask first, offer
+  //  second — with no offer/request wrapper class (unlike live orders).
+  // ====================================================================
+
+  function parseAmountTotal(el) {
+    // Same as parseAmount, but also handles the "filled/total" progress
+    // format (e.g. "100/100 Bio Extract") by taking the total (last number).
+    if (!el) return null;
+    const valueEl = el.querySelector('.market-resource-value') || el.querySelector('strong');
+    const raw = (valueEl?.textContent || '').trim();
+    const totalStr = raw.includes('/') ? raw.split('/').pop() : raw;
+    const num = parseInt((totalStr || '').replace(/[^\d]/g, ''), 10);
+    const res = el.querySelector('img')?.getAttribute('alt')
+      || (el.getAttribute('title') || '').replace(/[\d,.\/\s]/g, '');
+    return Number.isFinite(num) ? { amount: num, resource: res } : null;
+  }
+
+  function annotateMyOrdersRow(row) {
+    row.querySelectorAll('.nxa-myorder-badge').forEach((b) => b.remove());
+
+    const amounts = row.querySelectorAll('.market-resource-amount');
+    if (amounts.length < 2) return;
+    const get = parseAmountTotal(amounts[0]);   // what you (creator) are asking for
+    const give = parseAmountTotal(amounts[1]);  // what you (creator) offer in exchange
+    if (!get || !give) return;
+
+    const w = weights();
+    const wGive = w[norm(give.resource)];
+    const wGet = w[norm(get.resource)];
+    if (wGive == null || wGet == null) return;  // silently skip unknown resources here
+
+    const giveVal = give.amount * wGive;
+    const getVal = get.amount * wGet;
+    const ratio = giveVal > 0 ? getVal / giveVal : 0;
+    const delta = getVal - giveVal;
+    const color = colorFor(ratio);
+    const equivGet = delta / wGet;
+    const title = t('sellerTitle', delta, equivGet, get.resource);
+
+    const wrap = document.createElement('span');
+    wrap.className = 'nxa-myorder-badge';
+    wrap.style.cssText = 'display:inline-flex;gap:4px;align-items:center;'
+      + 'margin-left:6px;vertical-align:middle';
+
+    const ratioPill = document.createElement('span');
+    ratioPill.textContent = `×${ratio.toFixed(2)}`;
+    ratioPill.style.cssText = PILL
+      + `;color:#06121f;background:${color};border-color:${color}`;
+    ratioPill.title = title;
+
+    const pctPill = document.createElement('span');
+    pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
+    pctPill.style.cssText = PILL
+      + `;color:${color};background:transparent;border-color:${color}`;
+    pctPill.title = title;
+
+    wrap.append(ratioPill, pctPill);
+
+    // mount right after the offered (second) amount
+    const offerWrapper = amounts[1].parentNode;
+    offerWrapper.parentNode.insertBefore(wrap, offerWrapper.nextSibling);
+  }
+
+  function annotateMyOrders() {
+    document.querySelectorAll('.market-my-orders .market-my-order-row').forEach((row) => {
+      annotateMyOrdersRow(row);
     });
   }
 
@@ -502,9 +590,6 @@
     const warnNote = h('div', { style: 'display:flex;align-items:flex-start;gap:6px' },
       h('span', { style: `${FONT};color:#38bdf8;font-weight:900` }, '!'),
       h('span', { style: `${FONT};color:#64748b` }, t('justCalculating')));
-    const wantHintNote = h('div', { style: 'display:flex;align-items:flex-start;gap:6px' },
-      h('span', { style: `${FONT};color:#38bdf8;font-weight:900` }, '!'),
-      h('span', { style: `${FONT};color:#64748b` }, t('noAutoFill')));
 
     function recalc() {
       const w = weights();
@@ -570,8 +655,7 @@
       h('div', { style: 'margin-top:6px' }, rateNote),
       h('div', { style: 'margin-top:15px;padding-top:8px;border-top:1px solid #1e3a52;'
         + 'display:flex;flex-direction:column;gap:5px' },
-        warnNote,
-        wantHintNote));
+        warnNote));
 
     return h('div', { class: 'nxa-calc-panel', style:
       'margin:8px 0;padding:12px 14px;background:#06121f;border:1px solid #1e3a52;'
@@ -662,20 +746,42 @@
   }
 
   function mountCalculator() {
-    const tab = document.querySelector('.alliance-trade-tab');
-    if (!tab) return;
-
+    // only one of these tabs is ever live in the DOM at a time (the SPA
+    // unmounts the inactive one), so a single global "already mounted"
+    // check is enough — no risk of two panels existing simultaneously.
     const existingCalc = document.querySelector('.nxa-calc-panel');
     if (existingCalc && existingCalc.isConnected) return; // already mounted and live
     if (existingCalc) existingCalc.remove();  // stale leftover from a previous tab instance
 
-    // anchor next to the "+ New Order" button — we don't rely on a specific
-    // class for it since we don't control that markup, just its label
-    const orderBtn = Array.from(tab.querySelectorAll('button'))
-      .find((b) => /new order/i.test(b.textContent || ''));
-    if (!orderBtn) return;  // page not rendered (yet) in the shape we expect
+    const tradeTab = document.querySelector('.alliance-trade-tab');
+    if (tradeTab) {
+      // anchor next to the "+ New Order" button — we don't rely on a
+      // specific class for it since we don't control that markup, just
+      // its label
+      const orderBtn = Array.from(tradeTab.querySelectorAll('button'))
+        .find((b) => /new order/i.test(b.textContent || ''));
+      if (orderBtn) {
+        orderBtn.parentNode.insertBefore(buildCalcPanel(), orderBtn.nextSibling);
+        return;
+      }
+    }
 
-    orderBtn.parentNode.insertBefore(buildCalcPanel(), orderBtn.nextSibling);
+    const browseTab = document.querySelector('.market-browse');
+    if (browseTab) {
+      const filterRow = browseTab.querySelector('.market-filter-row');
+      if (filterRow) {
+        filterRow.parentNode.insertBefore(buildCalcPanel(), filterRow.nextSibling);
+        return;
+      }
+    }
+
+    // Create Order tab (or any other place) — reuses the same
+    // form.market-create-form component as the Alliance Trade "New Order"
+    // form, just not inside .alliance-trade-tab. Mount right above it.
+    const createForm = document.querySelector('form.market-create-form');
+    if (createForm && !createForm.closest('.alliance-trade-tab')) {
+      createForm.parentNode.insertBefore(buildCalcPanel(), createForm);
+    }
   }
 
   // ====================================================================
@@ -720,10 +826,10 @@
 
   function wireOrderForm() {
     if (!calcApi) return;
-    const tab = document.querySelector('.alliance-trade-tab');
-    if (!tab) return;
-
-    const offerRow = findFormRow(tab, 'I offer');
+    // search the whole document rather than a specific tab wrapper — the
+    // same form.market-create-form component is reused by both the
+    // Alliance Trade "New Order" form and the regular Create Order tab.
+    const offerRow = findFormRow(document, 'I offer');
     if (offerRow) {
       const sel = offerRow.querySelector('select');
       const amountInput = offerRow.querySelector('input[type="number"]');
@@ -746,7 +852,7 @@
       }
     }
 
-    const wantRow = findFormRow(tab, 'I want');
+    const wantRow = findFormRow(document, 'I want');
     if (wantRow) {
       const sel = wantRow.querySelector('select');
       if (sel) {
@@ -761,17 +867,59 @@
         }
       }
       // "I want" Amount input is intentionally never touched — the user
-      // types the calculator's result into it by hand. A small asterisk
-      // marks this, matching the footnote in the calculator panel above.
-      const wantAmount = wantRow.querySelector('input[type="number"]');
-      if (wantAmount && !wantRow.querySelector('.nxa-want-hint')) {
-        const hint = h('span', { class: 'nxa-want-hint',
-          style: `${FONT};color:#38bdf8;font-weight:900;font-size:15px;line-height:1;`
-            + 'margin-left:8px',
-        }, '*');
-        wantAmount.parentNode.insertBefore(hint, wantAmount.nextSibling);
-      }
+      // types the calculator's result into it by hand.
     }
+  }
+
+  // ====================================================================
+  //  Fleet cargo → ships-needed badge
+  //  When the "Send fleet to deliver X <resource>" panel is open (reached
+  //  via "Fill" on a trade order), show how many of that ship type it takes
+  //  to carry the required cargo — placed right in that ship's own row (next
+  //  to its Cargo/SPD stats), so it's obvious which ship the number is for.
+  //  Every other ship type is left untouched — this is purely a read
+  //  display, it never changes any quantity input itself.
+  //
+  //  Real markup: .alliance-fill-panel > .fill-panel-header (contains a
+  //  .market-resource-amount with the needed amount) and a list of
+  //  .fill-ship-row, each with .fill-ship-name ("Bulk Carrier", …) and
+  //  .fill-ship-stats ("Cargo:4.200 SPD:4").
+  // ====================================================================
+
+  const CARGO_SHIP_NAMES = new Set([
+    'Bulk Carrier', 'Großfrachter', 'Massengutfrachter',
+    'Transport Shuttle', 'Transport-Shuttle', 'Transportshuttle',
+  ]);
+
+  function annotateFleetCargo() {
+    document.querySelectorAll('.nxa-fleet-cargo-badge').forEach((b) => b.remove());
+
+    const panel = document.querySelector('.alliance-fill-panel');
+    if (!panel) return;
+
+    const header = panel.querySelector('.fill-panel-header');
+    const strongEl = header && header.querySelector('.market-resource-amount strong');
+    const needed = parseInt((strongEl?.textContent || '').replace(/[^\d]/g, ''), 10);
+    if (!header || !Number.isFinite(needed) || needed <= 0) return;
+
+    panel.querySelectorAll('.fill-ship-row').forEach((row) => {
+      const nameEl = row.querySelector('.fill-ship-name');
+      const statsEl = row.querySelector('.fill-ship-stats');
+      if (!nameEl || !statsEl) return;
+      const name = nameEl.textContent.trim();
+      if (!CARGO_SHIP_NAMES.has(name)) return;
+      const capMatch = statsEl.textContent.match(/Cargo:\s*([\d.,]+)/);
+      if (!capMatch) return;
+      const capacity = parseInt(capMatch[1].replace(/[^\d]/g, ''), 10);
+      if (!Number.isFinite(capacity) || capacity <= 0) return;
+      const shipsNeeded = Math.ceil(needed / capacity);
+      const pill = document.createElement('span');
+      pill.className = 'nxa-fleet-cargo-badge';
+      pill.textContent = `${shipsNeeded}× needed`;
+      pill.style.cssText = PILL
+        + ';color:#38bdf8;background:transparent;border-color:#38bdf8;margin-left:10px';
+      statsEl.parentNode.insertBefore(pill, statsEl.nextSibling);
+    });
   }
 
   // ---- observer ----
@@ -788,12 +936,17 @@
     return n.nodeType === 1 && (n.classList?.contains('nxa-value-badge')
       || n.classList?.contains('nxa-calc-panel') || n.classList?.contains('nxa-history-badge')
       || n.classList?.contains('nxa-you-marker') || n.classList?.contains('nxa-want-hint')
+      || n.classList?.contains('nxa-fleet-cargo-badge') || n.classList?.contains('nxa-myorder-badge')
       || n.closest?.('.nxa-value-badge') || n.closest?.('.nxa-calc-panel')
       || n.closest?.('.nxa-history-badge') || n.closest?.('.nxa-you-marker')
-      || n.closest?.('.nxa-want-hint'));
+      || n.closest?.('.nxa-want-hint') || n.closest?.('.nxa-fleet-cargo-badge')
+      || n.closest?.('.nxa-myorder-badge'));
   }
 
-  function refreshAll() { annotateAll(); annotateHistory(); mountCalculator(); wireOrderForm(); }
+  function refreshAll() {
+    annotateAll(); annotateHistory(); annotateMyOrders();
+    mountCalculator(); wireOrderForm(); annotateFleetCargo();
+  }
 
   let debounceObs = null;
   new MutationObserver((muts) => {
