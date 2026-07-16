@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade orders with their value ratio under your own resource weights. Standalone — completely independent from the Market Value script.
-// @version     0.23.0
+// @version     1.0.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -101,6 +101,8 @@
       fairRate: (giveLabel, val, getLabel) => `fair rate  1 ${giveLabel} = ${val} ${getLabel}`,
       unrounded: (v) => `unrounded: ${v}`,
       justCalculating: "Calculator won't automate anything.",
+      feeUpdateHint: 'To update your fee cost, open Hub Inventory after research.',
+      swapTooltip: 'Swap Give and Ask For',
       ratios: 'Ratios',
       ratiosTooltip: 'These are the default ratios used to value trades. Type a number to override.',
       weightPillTitle: (label, def) => `${label} — blank use the default (${def})`,
@@ -121,6 +123,17 @@
         + 'Only include resources you want to override — anything omitted uses\n'
         + 'the built-in default:',
       invalidJson: 'Invalid JSON: ',
+      feeLabel: 'Fee',
+      feeTooltip: 'Market Browse hub fee (%) taken from what you receive when filling an '
+        + "order — Alliance Trade has none. Read straight off the game's own hub-inventory "
+        + 'rate or per-order net line; shows "error" if neither has ever been seen.',
+      feeAppliedNote: (pct) => `\n(${pct}% market fee already deducted from what you receive)`,
+      feeAdjustedRate: (val, pct) => `with ${pct}% fee: ask for ${val} instead`,
+      feeError: 'error',
+      feeErrorNote: '\n(fee rate unknown — open Hub Inventory once to detect it)',
+      feeErrorLine: 'fee rate unknown — open Hub Inventory once to detect it',
+      feeToolTipAlliance: 'Alliance Trade has no hub fee — 0% commission.',
+      feeNoneAlliance: 'Alliance Trade has no fee — 0% commission.',
     },
     de: {
       calcTitle: 'Fairer-Handel-Rechner',
@@ -133,6 +146,8 @@
       fairRate: (giveLabel, val, getLabel) => `fairer Kurs  1 ${giveLabel} = ${val} ${getLabel}`,
       unrounded: (v) => `ungerundet: ${v}`,
       justCalculating: 'Der Rechner automatisiert nichts.',
+      feeUpdateHint: 'Um deine Gebühr zu aktualisieren, öffne nach der Forschung Hub Inventory.',
+      swapTooltip: 'Geben und Verlangen tauschen',
       ratios: 'Verhältnisse',
       ratiosTooltip: 'Das sind die Standard-Verhältnisse zur Bewertung von Trades. Zahl eingeben zum Überschreiben.',
       weightPillTitle: (label, def) => `${label} — leer lassen für den Standardwert (${def})`,
@@ -153,6 +168,18 @@
         + 'Nur Ressourcen angeben, die überschrieben werden sollen — alles andere\n'
         + 'nutzt den eingebauten Standard:',
       invalidJson: 'Ungültiges JSON: ',
+      feeLabel: 'Gebühr',
+      feeTooltip: 'Markt-Gebühr (%) beim Erfüllen einer Browse-Order, wird vom Erhaltenen '
+        + 'abgezogen — Alliance Trade hat keine. Wird direkt aus der Hub-Inventory-Rate oder '
+        + 'der Netto-Zeile pro Order gelesen; zeigt "error", falls noch keins davon je '
+        + 'gesehen wurde.',
+      feeAppliedNote: (pct) => `\n(${pct}% Markt-Gebühr bereits vom Erhaltenen abgezogen)`,
+      feeAdjustedRate: (val, pct) => `mit ${pct}% Gebühr: verlange stattdessen ${val}`,
+      feeError: 'error',
+      feeErrorNote: '\n(Gebühr unbekannt — einmal Hub Inventory öffnen zum Erkennen)',
+      feeErrorLine: 'Gebühr unbekannt — einmal Hub Inventory öffnen zum Erkennen',
+      feeToolTipAlliance: 'Alliance Trade hat keine Hub-Gebühr — 0% Kommission.',
+      feeNoneAlliance: 'Alliance Trade hat keine Gebühr — 0% Kommission.',
     },
   };
   const t = (key, ...args) => {
@@ -204,10 +231,81 @@
     return { ...DEFAULT_WEIGHTS, ...overrides() };
   }
 
+  // ---- market fee (Browse/Create Order only — Alliance Trade is 0%) ----
+  // Regular Market fills take a hub fee off what you receive; it's
+  // reducible via research so we don't hardcode a fixed number and we
+  // don't guess one either. Only two real, DIRECTLY-displayed percentages
+  // count as a source:
+  // 1. Hub Inventory's own per-hub rate — <span class="market-hub-commission">
+  //    4.5% fee</span> — the authoritative, already-post-research value.
+  // 2. Per-row net line — <span class="market-order-net"> "You get: ~1,071
+  //    Alloys after 3% fee" — exact percentage for that specific order.
+  // Both are only present while their respective tab/form is open, so once
+  // we've seen a rate we remember it (persisted across reloads too) and
+  // keep using it until a fresher one shows up. If neither has EVER been
+  // seen, feePercent() returns null and the UI shows an error instead of
+  // silently assuming a number.
+  const LAST_FEE_KEY = 'nexusLastDetectedFeePercent';
+  const NET_LINE_RE = /after\s+(\d+(?:[.,]\d+)?)\s*%/i;
+
+  let lastDetectedFeePercent = (() => {
+    try {
+      const stored = GM_getValue(LAST_FEE_KEY, '');
+      const n = Number(stored);
+      return stored !== '' && Number.isFinite(n) ? n : null;
+    } catch (e) { return null; }
+  })();
+
+  // Parses a single row's own net line — used by annotateRow() for
+  // per-order precision (falls back to the page-wide feePercent() when a
+  // given row doesn't have one, e.g. no amount typed for it).
+  function parseNetLine(row) {
+    const el = row.querySelector('.market-order-net');
+    if (!el) return null;
+    const m = (el.textContent || '').match(NET_LINE_RE);
+    if (!m) return null;
+    const n = parseFloat(m[1].replace(',', '.'));
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function detectFeePercent() {
+    const hubEl = document.querySelector('.market-hub-commission');
+    if (hubEl && !hubEl.closest('.alliance-trade-tab')) {
+      const m = (hubEl.textContent || '').match(/(\d+(?:[.,]\d+)?)\s*%/);
+      if (m) {
+        const n = parseFloat(m[1].replace(',', '.'));
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    const netEl = document.querySelector('.market-order-net');
+    if (netEl && !netEl.closest('.alliance-trade-tab')) {
+      const m = (netEl.textContent || '').match(NET_LINE_RE);
+      if (m) {
+        const n = parseFloat(m[1].replace(',', '.'));
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    return null;
+  }
+
+  // Returns a percentage, or null when no real source has ever been seen —
+  // callers must treat null as "unknown / error", never silently as 0 or
+  // any other fabricated number.
+  function feePercent() {
+    const detected = detectFeePercent();
+    if (detected != null) {
+      lastDetectedFeePercent = detected;
+      try { GM_setValue(LAST_FEE_KEY, String(detected)); } catch (e) { /* ignore */ }
+      return detected;
+    }
+    return lastDetectedFeePercent;
+  }
+
   function refreshAfterWeightChange() {
     cachedOverrides = null; // force a re-read from storage next call
     annotateAll();
     annotateHistory();
+    annotateMyOrders();
     if (calcRecalc) calcRecalc();
     syncWeightsPanelInputs();
   }
@@ -289,12 +387,23 @@
       wrap.appendChild(pill);
     } else {
       const giveVal = give.amount * wGive;
-      const getVal = get.amount * wGet;
+      // Regular Market fills take a hub fee off what you receive; Alliance
+      // Trade has none (0% commission), so only apply it outside that tab.
+      // Prefer THIS row's own exact net line ("after N% fee") when present;
+      // otherwise fall back to the page-wide detected/cached rate. If
+      // neither has ever been seen, don't fabricate a number — show the
+      // gross (un-deducted) value and flag it as unknown instead.
+      const inBrowse = !row.closest('.alliance-trade-tab');
+      const rowFeePct = inBrowse ? (parseNetLine(row) ?? feePercent()) : 0;
+      const feeUnknown = inBrowse && rowFeePct == null;
+      const feeMultiplier = (inBrowse && !feeUnknown) ? (1 - rowFeePct / 100) : 1;
+      const getVal = get.amount * wGet * feeMultiplier;
       const ratio = giveVal > 0 ? getVal / giveVal : 0;
       const delta = getVal - giveVal;  // buyer's (filler's) profit/loss vs. ×1.00
       const color = colorFor(ratio);
       const equivGet = delta / wGet;  // delta expressed as extra/less of the received resource
-      const title = t('buyerTitle', delta, equivGet, get.resource);
+      const title = t('buyerTitle', delta, equivGet, get.resource)
+        + (feeUnknown ? t('feeErrorNote') : (inBrowse ? t('feeAppliedNote', rowFeePct) : ''));
 
       // headline pills: ×ratio (solid) + profit/loss as % (outline). Absolute
       // value and the resource-equivalent are still one hover away in the
@@ -578,18 +687,25 @@
   // drive the calculator's OWN fields (never the game's own form fields)
   let calcApi = null;
 
-  function buildCalcPanel() {
-    let giveKey = 'alloys';
+  function buildCalcPanel(isAlliance) {
+    let giveKey = 'ore';
     let getKey = 'silicates';
 
     const giveAmount = h('input', { type: 'number', min: '0', step: 'any',
       placeholder: t('amountToGive'), style: `${FIELD};width:130px` });
     const getOutput = h('input', { type: 'text', readonly: 'true',
       placeholder: t('amountToGet'), style: `${FIELD};width:150px;color:#4ade80` });
-    const rateNote = h('span', { style: `${FONT};color:#64748b` }, '');
+    const rateNote = h('div', { style: 'display:flex;flex-direction:column;gap:2px' },
+      h('span', { style: `${FONT};color:#64748b` }, ''),
+      h('span', { style: `${FONT};color:#38bdf8` }, ''));
+    const [rateNoFeeEl, rateWithFeeEl] = rateNote.children;
     const warnNote = h('div', { style: 'display:flex;align-items:flex-start;gap:6px' },
       h('span', { style: `${FONT};color:#38bdf8;font-weight:900` }, '!'),
       h('span', { style: `${FONT};color:#64748b` }, t('justCalculating')));
+    const feeUpdateHint = h('div', { style:
+      'display:flex;align-items:flex-start;gap:6px' },
+      h('span', { style: `${FONT};color:#38bdf8;font-weight:900` }, '!'),
+      h('span', { style: `${FONT};color:#64748b` }, t('feeUpdateHint')));
 
     function recalc() {
       const w = weights();
@@ -598,23 +714,49 @@
 
       if (giveKey === getKey) {
         getOutput.value = '';
-        rateNote.textContent = t('pickDifferent');
+        rateNoFeeEl.textContent = t('pickDifferent');
+        rateWithFeeEl.textContent = '';
         return;
       }
       if (wGive == null || wGet == null) {
         getOutput.value = '';
-        rateNote.textContent = t('noWeightRate');
+        rateNoFeeEl.textContent = t('noWeightRate');
+        rateWithFeeEl.textContent = '';
         return;
       }
 
-      const fair = wGive / wGet;  // units of `get` per unit of `give`, at ×1.00
-      rateNote.textContent = t('fairRate', resLabel(giveKey), fair.toFixed(3), resLabel(getKey));
+      const fairNoFee = wGive / wGet;  // units of `get` per unit of `give`, ignoring any fee
+      rateNoFeeEl.textContent = t('fairRate', resLabel(giveKey), fairNoFee.toFixed(3), resLabel(getKey));
+
+      // Regular Market fills take a hub fee off what you receive; Alliance
+      // Trade has none. To still net a fair (×1.00) trade after the fee,
+      // you need to ask for more of the received resource to compensate —
+      // shown as its own line so the two numbers aren't easy to conflate.
+      let fair = fairNoFee;
+      if (isAlliance) {
+        rateWithFeeEl.textContent = t('feeNoneAlliance');
+        rateWithFeeEl.style.color = '#4ade80';
+      } else {
+        const pct = feePercent();
+        if (pct == null) {
+          fair = fairNoFee;
+          rateWithFeeEl.textContent = t('feeErrorLine');
+          rateWithFeeEl.style.color = '#f87171';
+        } else {
+          fair = fairNoFee / (1 - pct / 100);
+          rateWithFeeEl.textContent = t('feeAdjustedRate', fair.toFixed(3), pct);
+          rateWithFeeEl.style.color = '#38bdf8';
+        }
+      }
 
       const amt = Number(giveAmount.value);
       if (!(amt > 0)) { getOutput.value = ''; return; }
       const exact = amt * fair;
+      // strip trailing zeros (e.g. "0.500" -> "0.5", "22" stays "22") without
+      // rounding — the point is the exact value, not a rounded-off one that
+      // silently becomes "0" for small amounts.
       getOutput.value = String(Math.round(exact));
-      getOutput.title = t('unrounded', exact.toFixed(3));
+      getOutput.title = '';
     }
 
     const giveSel = resSelect(giveKey, () => { giveKey = giveSel.value; recalc(); });
@@ -649,19 +791,25 @@
       h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' },
         h('span', { style: `${FONT};color:#94a3b8` }, t('give')),
         giveAmount, giveSel,
-        h('span', { style: `${FONT};color:#38bdf8;font-weight:800` }, '⇄'),
+        h('button', { type: 'button', title: t('swapTooltip'), onclick: () => {
+          const tmpKey = giveKey; giveKey = getKey; getKey = tmpKey;
+          giveSel.value = giveKey; getSel.value = getKey;
+          if (getOutput.value !== '') giveAmount.value = getOutput.value;
+          recalc();
+        }, style: `${FONT};color:#38bdf8;font-weight:800;background:transparent;`
+          + 'border:none;cursor:pointer;padding:0' }, '⇄'),
         h('span', { style: `${FONT};color:#94a3b8` }, t('askExactly')),
         getOutput, getSel),
       h('div', { style: 'margin-top:6px' }, rateNote),
       h('div', { style: 'margin-top:15px;padding-top:8px;border-top:1px solid #1e3a52;'
         + 'display:flex;flex-direction:column;gap:5px' },
-        warnNote));
+        warnNote, feeUpdateHint));
 
     return h('div', { class: 'nxa-calc-panel', style:
       'margin:8px 0;padding:12px 14px;background:#06121f;border:1px solid #1e3a52;'
       + 'border-radius:10px;display:flex;justify-content:space-between;'
       + 'align-items:flex-start;gap:16px;flex-wrap:wrap' },
-      leftCol, buildWeightsGrid());
+      leftCol, buildWeightsGrid(isAlliance));
   }
 
   // ====================================================================
@@ -722,19 +870,44 @@
     }, icon, input);
   }
 
-  function buildWeightsGrid() {
+  let feeDisplayEl = null;
+
+  function feeDisplayText(pct) {
+    return pct == null ? t('feeError') : `${pct}%`;
+  }
+
+  let feeIsAlliance = false;
+
+  function buildFeeControl(isAlliance) {
+    feeIsAlliance = isAlliance;
+    const pct = isAlliance ? 0 : feePercent();
+    feeDisplayEl = h('span', {
+      style: `${FONT};font-weight:800;font-size:13px;color:${pct == null ? '#f87171' : '#f1f5f9'}`,
+    }, feeDisplayText(pct));
+    return h('span', {
+      title: isAlliance ? t('feeToolTipAlliance') : t('feeTooltip'),
+      style: 'display:flex;align-items:center;gap:4px;background:#0f1b2e;'
+        + 'border:1px solid #1e3a52;border-radius:999px;padding:3px 10px',
+    },
+      h('span', { style: `${FONT};color:#94a3b8;font-size:12px` }, t('feeLabel')),
+      feeDisplayEl);
+  }
+
+  function buildWeightsGrid(isAlliance) {
     weightInputsByKey = {};
     return h('div', { style: 'flex:none;width:290px' },
-      h('div', { style: 'display:flex;align-items:center;justify-content:center;gap:6px', title:
-        t('ratiosTooltip') },
-        h('span', { style: 'font-size:16px;color:#38bdf8' }, '⚖'),
-        h('span', { style: `${FONT};color:#e2e8f0;font-size:13px;font-weight:800` }, t('ratios'))),
+      h('div', { style: 'display:flex;align-items:center;justify-content:center;gap:6px;'
+        + 'flex-wrap:wrap' },
+        h('span', { style: 'display:flex;align-items:center;gap:6px', title: t('ratiosTooltip') },
+          h('span', { style: 'font-size:16px;color:#38bdf8' }, '⚖'),
+          h('span', { style: `${FONT};color:#e2e8f0;font-size:13px;font-weight:800` }, t('ratios'))),
+        buildFeeControl(isAlliance)),
       h('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:6px' },
         ...RESOURCES.map((r) => buildWeightPill(r))));
   }
 
-  // Keep the panel's own inputs in sync when weights change from elsewhere
-  // (the raw-JSON menu command), without rebuilding the whole panel.
+  // Keep the panel's own inputs in sync when weights/fee change from
+  // elsewhere (the menu commands), without rebuilding the whole panel.
   function syncWeightsPanelInputs() {
     const ov = overrides();
     for (const r of RESOURCES) {
@@ -743,44 +916,81 @@
       const cur = ov[r.key];
       input.value = cur != null ? String(cur) : '';
     }
+    if (feeDisplayEl) {
+      const pct = feeIsAlliance ? 0 : feePercent();
+      feeDisplayEl.textContent = feeDisplayText(pct);
+      feeDisplayEl.style.color = pct == null ? '#f87171' : '#f1f5f9';
+    }
   }
 
   function mountCalculator() {
-    // only one of these tabs is ever live in the DOM at a time (the SPA
-    // unmounts the inactive one), so a single global "already mounted"
-    // check is enough — no risk of two panels existing simultaneously.
-    const existingCalc = document.querySelector('.nxa-calc-panel');
-    if (existingCalc && existingCalc.isConnected) return; // already mounted and live
-    if (existingCalc) existingCalc.remove();  // stale leftover from a previous tab instance
-
+    // The calculator belongs in four places: the Alliance Trade "New
+    // Order" form, the regular Market's Browse tab, the Create Order form,
+    // and Hub Inventory. Everywhere else (My Orders, History, Artifacts,
+    // Cosmetics, Trader, …) it must NOT be shown — so we actively remove
+    // any leftover panel whenever none of those anchors are found on the
+    // current page, rather than only replacing it when rebuilding.
     const tradeTab = document.querySelector('.alliance-trade-tab');
-    if (tradeTab) {
-      // anchor next to the "+ New Order" button — we don't rely on a
-      // specific class for it since we don't control that markup, just
-      // its label
-      const orderBtn = Array.from(tradeTab.querySelectorAll('button'))
-        .find((b) => /new order/i.test(b.textContent || ''));
-      if (orderBtn) {
-        orderBtn.parentNode.insertBefore(buildCalcPanel(), orderBtn.nextSibling);
-        return;
-      }
-    }
+    const orderBtn = tradeTab && Array.from(tradeTab.querySelectorAll('button'))
+      .find((b) => /new order/i.test(b.textContent || ''));
 
     const browseTab = document.querySelector('.market-browse');
-    if (browseTab) {
-      const filterRow = browseTab.querySelector('.market-filter-row');
-      if (filterRow) {
-        filterRow.parentNode.insertBefore(buildCalcPanel(), filterRow.nextSibling);
-        return;
+    const filterRow = browseTab && browseTab.querySelector('.market-filter-row');
+
+    const createForm = document.querySelector('form.market-create-form');
+    const createFormOutsideAlliance = createForm && !createForm.closest('.alliance-trade-tab')
+      ? createForm : null;
+
+    // Hub Inventory: find the shared ancestor of every hub's fee element
+    // and mount just above it (the whole hub card list), rather than
+    // guessing a specific class for the tab wrapper.
+    const hubFeeEls = Array.from(document.querySelectorAll('.market-hub-commission'))
+      .filter((el) => !el.closest('.alliance-trade-tab'));
+    let hubListContainer = null;
+    if (hubFeeEls.length) {
+      let el = hubFeeEls[0];
+      while (el && el.parentElement) {
+        if (el.parentElement.querySelectorAll('.market-hub-commission').length >= hubFeeEls.length) {
+          hubListContainer = el.parentElement;
+          break;
+        }
+        el = el.parentElement;
       }
     }
 
-    // Create Order tab (or any other place) — reuses the same
-    // form.market-create-form component as the Alliance Trade "New Order"
-    // form, just not inside .alliance-trade-tab. Mount right above it.
-    const createForm = document.querySelector('form.market-create-form');
-    if (createForm && !createForm.closest('.alliance-trade-tab')) {
-      createForm.parentNode.insertBefore(buildCalcPanel(), createForm);
+    // Decide the ONE correct context for right now — each is tagged so we
+    // can tell a stale panel from a different context apart from a fresh,
+    // correctly-built one instead of just checking "does a panel exist".
+    let anchor = null;
+    let isAlliance = false;
+    let contextTag = null;
+    if (orderBtn) { anchor = orderBtn; isAlliance = true; contextTag = 'alliance'; }
+    else if (filterRow) { anchor = filterRow; contextTag = 'browse'; }
+    else if (createFormOutsideAlliance) { anchor = createFormOutsideAlliance; contextTag = 'create'; }
+    else if (hubListContainer) { anchor = hubListContainer; contextTag = 'hub'; }
+
+    const existingCalc = document.querySelector('.nxa-calc-panel');
+
+    if (!anchor) {
+      if (existingCalc) existingCalc.remove();  // no valid anchor on this page — don't show it
+      return;
+    }
+
+    // Rebuild whenever the panel is missing, disconnected, OR was built for
+    // a different context — this is what actually guards against the
+    // Alliance panel silently ending up with the global fee (or vice
+    // versa) if a stale node from a previous tab ever lingers.
+    if (existingCalc && existingCalc.isConnected && existingCalc.dataset.nxaContext === contextTag) {
+      return;
+    }
+    if (existingCalc) existingCalc.remove();
+
+    const panel = buildCalcPanel(isAlliance);
+    panel.dataset.nxaContext = contextTag;
+    if (contextTag === 'hub' || contextTag === 'create') {
+      anchor.parentNode.insertBefore(panel, anchor);
+    } else {
+      anchor.parentNode.insertBefore(panel, anchor.nextSibling);
     }
   }
 
@@ -922,6 +1132,36 @@
     });
   }
 
+  // ====================================================================
+  //  Calculator reset on tab switch
+  //  The panel is meant to always start fresh (empty fields, default
+  //  resources) whenever you enter a tab — but some tabs don't fully
+  //  unmount their old DOM when you navigate away and back, so our own
+  //  "already mounted for this context" check in mountCalculator() would
+  //  otherwise just keep reusing whatever was typed last time. We can't
+  //  rely on a specific class for the tab bar (unconfirmed markup), so we
+  //  match tab buttons by their exact visible text instead — good enough
+  //  since these are short, unique, unlikely-to-collide labels.
+  // ====================================================================
+
+  const TAB_NAMES = new Set([
+    'browse', 'hub inventory', 'create order', 'my orders',
+    'history', 'artifacts', 'cosmetics', 'trader', 'alliance trade',
+  ]);
+
+  document.addEventListener('click', (e) => {
+    let el = e.target;
+    for (let i = 0; i < 4 && el; i++) {
+      const txt = (el.textContent || '').trim().toLowerCase();
+      if (TAB_NAMES.has(txt)) {
+        const existing = document.querySelector('.nxa-calc-panel');
+        if (existing) existing.remove();  // forces mountCalculator() to rebuild fresh
+        break;
+      }
+      el = el.parentElement;
+    }
+  }, true);
+
   // ---- observer ----
   // The Alliance Trade tab is unmounted and remounted by the SPA whenever you
   // switch to another tab and back — the container is a brand new DOM node
@@ -946,6 +1186,7 @@
   function refreshAll() {
     annotateAll(); annotateHistory(); annotateMyOrders();
     mountCalculator(); wireOrderForm(); annotateFleetCargo();
+    syncWeightsPanelInputs();
   }
 
   let debounceObs = null;
