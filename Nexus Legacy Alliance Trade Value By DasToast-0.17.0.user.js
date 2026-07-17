@@ -2,8 +2,8 @@
 // @name        Nexus Legacy Trade Value By DasToast
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
-// @description Annotates Alliance Trade orders with their value ratio under your own resource weights. Standalone — completely independent from the Market Value script.
-// @version     1.11.0
+// @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
+// @version     1.12.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -13,16 +13,17 @@
 // ==/UserScript==
 
 /*
- * Display tool for the Alliance Trade tab, the regular Market's Browse tab,
- * and My Orders — separate namespace, separate storage. No network, no
- * token, no polling, no alerts. Parses the market DOM client-side and
- * annotates each order row in place.
+ * Display tool for Alliance Trade, Market Browse, Create Order, Hub
+ * Inventory, and My Orders — separate namespace, separate storage. No
+ * network, no token, no polling (an event-driven MutationObserver instead).
+ * Parses the market DOM client-side and annotates each order row in place.
  *
- * Each Alliance Trade order is "you GIVE the request, you GET the offer".
- * Alliance Trade has no hub fee (0% commission), so the value you get is
- * simply the gross offer amount — there is no "after N% fee" line to parse.
- * We value both sides with your weights and show the ratio  get / give
- * (×1.00 = fair value; >1 favours you).
+ * Every order is "you GIVE the request, you GET the offer". Alliance Trade
+ * has no hub fee (0% commission); the regular Market does, read straight off
+ * the game's own displayed rate (Hub Inventory's "X% fee" or a per-order
+ * "after N% fee" line) — never guessed or hardcoded. We value both sides
+ * with your weights and show the ratio get/give (×1.00 = fair value; >1
+ * favours you) plus the value delta.
  *
  * Weights: DEFAULT_WEIGHTS below is the built-in ratio table. Storage only
  * ever holds the *overrides* the user has typed in the inline panel — a
@@ -30,12 +31,9 @@
  * the UI unambiguous: greyed-out placeholder = default value in effect,
  * a typed value = your override, clearing the field reverts to default.
  *
- * Edit weights via the inline "Ressourcen-Gewichte" panel next to "+ New
- * Order", or via the userscript menu → "Set alliance trade resource
+ * Edit weights via the inline Ratios panel next to the Fair Trade
+ * Calculator, or via the userscript menu → "Set alliance trade resource
  * weights" (raw JSON, same overrides format, for bulk edits).
- * Everything in this script — the observer, the storage key, the badge
- * class — only ever touches the Alliance Trade container; it never looks
- * at or reacts to anything outside it.
  */
 
 (function () {
@@ -99,7 +97,6 @@
       pickDifferent: 'pick two different resources',
       noWeightRate: 'no weight set for one of these — check the userscript menu',
       fairRate: (giveLabel, val, getLabel) => `fair rate  1 ${giveLabel} = ${val} ${getLabel}`,
-      unrounded: (v) => `unrounded: ${v}`,
       justCalculating: "Calculator won't automate anything.",
       feeUpdateHint: 'To update your fee cost, open Hub Inventory after research.',
       swapTooltip: 'Swap Give and Ask For',
@@ -144,7 +141,6 @@
       pickDifferent: 'zwei unterschiedliche Ressourcen wählen',
       noWeightRate: 'für eine davon ist kein Gewicht gesetzt — im Userscript-Menü prüfen',
       fairRate: (giveLabel, val, getLabel) => `fairer Kurs  1 ${giveLabel} = ${val} ${getLabel}`,
-      unrounded: (v) => `ungerundet: ${v}`,
       justCalculating: 'Der Rechner automatisiert nichts.',
       feeUpdateHint: 'Um deine Gebühr zu aktualisieren, öffne nach der Forschung Hub Inventory.',
       swapTooltip: 'Geben und Verlangen tauschen',
@@ -294,8 +290,10 @@
   function feePercent() {
     const detected = detectFeePercent();
     if (detected != null) {
-      lastDetectedFeePercent = detected;
-      try { GM_setValue(LAST_FEE_KEY, String(detected)); } catch (e) { /* ignore */ }
+      if (detected !== lastDetectedFeePercent) {
+        lastDetectedFeePercent = detected;
+        try { GM_setValue(LAST_FEE_KEY, String(detected)); } catch (e) { /* ignore */ }
+      }
       return detected;
     }
     return lastDetectedFeePercent;
