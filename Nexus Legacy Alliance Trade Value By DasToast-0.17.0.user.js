@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade orders with their value ratio under your own resource weights. Standalone — completely independent from the Market Value script.
-// @version     1.4.0
+// @version     1.10.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -352,7 +352,7 @@
   }
 
   const PILL = 'padding:0 6px;border:1px solid;border-radius:6px;'
-    + 'font-family:inherit;font-weight:600;font-size:11px;line-height:1.6;'
+    + 'font-family:inherit;font-weight:700;font-size:inherit;line-height:1.6;'
     + 'white-space:nowrap';
 
   function annotateRow(row) {
@@ -667,8 +667,11 @@
     }
     return el;
   }
-  const FONT = 'font-family:inherit;font-weight:600;font-size:12px;line-height:1.5';
+  const FONT = 'font-family:inherit;font-weight:700;font-size:15px;line-height:1.5';
+  const FONT_NUM = 'font-family:inherit;font-weight:700;font-size:15px;line-height:1.5';
   const FIELD = `${FONT};background:#0b1a2b;color:#cbd5e1;border:1px solid #1e3a52;`
+    + 'border-radius:5px;padding:2px 6px';
+  const FIELD_NUM = `${FONT_NUM};background:#0b1a2b;color:#cbd5e1;border:1px solid #1e3a52;`
     + 'border-radius:5px;padding:2px 6px';
 
   function resSelect(value, onchange) {
@@ -693,9 +696,9 @@
     let getKey = 'silicates';
 
     const giveAmount = h('input', { type: 'number', min: '0', step: 'any',
-      placeholder: t('amountToGive'), style: `${FIELD};width:130px` });
+      placeholder: t('amountToGive'), style: `${FIELD_NUM};width:130px` });
     const getOutput = h('input', { type: 'text', readonly: 'true',
-      placeholder: t('amountToGet'), style: `${FIELD};width:150px;color:#4ade80` });
+      placeholder: t('amountToGet'), style: `${FIELD_NUM};width:150px;color:#4ade80` });
     const rateNote = h('div', { style: 'display:flex;flex-direction:column;gap:2px' },
       h('span', { style: `${FONT};color:#64748b` }, ''),
       h('span', { style: `${FONT};color:#38bdf8` }, ''));
@@ -792,13 +795,16 @@
       h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' },
         h('span', { style: `${FONT};color:#94a3b8` }, t('give')),
         giveAmount, giveSel,
-        h('button', { type: 'button', title: t('swapTooltip'), onclick: () => {
+        h('button', { type: 'button', title: t('swapTooltip'), onclick: (e) => {
           const tmpKey = giveKey; giveKey = getKey; getKey = tmpKey;
           giveSel.value = giveKey; getSel.value = getKey;
           if (getOutput.value !== '') giveAmount.value = getOutput.value;
           recalc();
-        }, style: `${FONT};color:#38bdf8;font-weight:800;background:transparent;`
-          + 'border:none;cursor:pointer;padding:0' }, '⇄'),
+        }, onmouseenter: (e) => { e.target.style.background = '#16324a'; },
+        onmouseleave: (e) => { e.target.style.background = '#0f2437'; },
+        style: `${FONT};color:#38bdf8;font-weight:800;background:#0f2437;`
+          + 'border:1px solid #1e3a52;border-radius:6px;cursor:pointer;'
+          + 'padding:2px 8px;line-height:1' }, '⇄'),
         h('span', { style: `${FONT};color:#94a3b8` }, t('askExactly')),
         getOutput, getSel),
       h('div', { style: 'margin-top:6px' }, rateNote),
@@ -901,7 +907,7 @@
         + 'flex-wrap:wrap' },
         h('span', { style: 'display:flex;align-items:center;gap:6px', title: t('ratiosTooltip') },
           h('span', { style: 'font-size:16px;color:#38bdf8' }, '⚖'),
-          h('span', { style: `${FONT};color:#e2e8f0;font-size:13px;font-weight:800` }, t('ratios'))),
+          h('span', { style: `${FONT};color:#e2e8f0` }, t('ratios'))),
         buildFeeControl(isAlliance)),
       h('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:6px' },
         ...RESOURCES.map((r) => buildWeightPill(r))));
