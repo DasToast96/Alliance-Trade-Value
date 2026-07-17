@@ -352,7 +352,8 @@
   }
 
   const PILL = 'padding:0 6px;border:1px solid;border-radius:6px;'
-    + 'font:600 11px/1.6 "JetBrains Mono",monospace;white-space:nowrap';
+    + 'font:600 11px/1.6 "JetBrains Mono",monospace;white-space:nowrap;'
+    + 'font-variant-numeric:slashed-zero';
 
   function annotateRow(row) {
     // safety guard — this script only ever touches Alliance Trade rows and
@@ -415,7 +416,7 @@
       ratioPill.title = title;
 
       const pctPill = document.createElement('span');
-      pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
+      pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
       pctPill.style.cssText = PILL
         + `;color:${color};background:transparent;border-color:${color}`;
       pctPill.title = title;
@@ -504,7 +505,7 @@
     ratioPill.title = title;
 
     const pctPill = document.createElement('span');
-    pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
+    pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
     pctPill.style.cssText = PILL
       + `;color:${color};background:transparent;border-color:${color}`;
     pctPill.title = title;
@@ -597,7 +598,7 @@
     ratioPill.title = title;
 
     const pctPill = document.createElement('span');
-    pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
+    pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
     pctPill.style.cssText = PILL
       + `;color:${color};background:transparent;border-color:${color}`;
     pctPill.title = title;
@@ -666,7 +667,8 @@
     }
     return el;
   }
-  const FONT = 'font:600 12px/1.5 "JetBrains Mono",ui-monospace,monospace';
+  const FONT = 'font:600 12px/1.5 "JetBrains Mono",ui-monospace,monospace;'
+    + 'font-variant-numeric:slashed-zero';
   const FIELD = `${FONT};background:#0b1a2b;color:#cbd5e1;border:1px solid #1e3a52;`
     + 'border-radius:5px;padding:2px 6px';
 
