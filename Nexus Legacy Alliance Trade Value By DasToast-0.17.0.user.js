@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade orders with their value ratio under your own resource weights. Standalone — completely independent from the Market Value script.
-// @version     1.10.0
+// @version     1.11.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -939,7 +939,7 @@
     // current page, rather than only replacing it when rebuilding.
     const tradeTab = document.querySelector('.alliance-trade-tab');
     const orderBtn = tradeTab && Array.from(tradeTab.querySelectorAll('button'))
-      .find((b) => /new order/i.test(b.textContent || ''));
+      .find((b) => /^\+?\s*(new order|cancel)$/i.test((b.textContent || '').trim()));
 
     const browseTab = document.querySelector('.market-browse');
     const filterRow = browseTab && browseTab.querySelector('.market-filter-row');
