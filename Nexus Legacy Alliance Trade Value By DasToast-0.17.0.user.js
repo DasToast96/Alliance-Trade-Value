@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade orders with their value ratio under your own resource weights. Standalone — completely independent from the Market Value script.
-// @version     1.3.0
+// @version     1.4.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -352,7 +352,7 @@
   }
 
   const PILL = 'padding:0 6px;border:1px solid;border-radius:6px;'
-    + 'font:600 11px/1.6 "Lucida Console",Menlo,Monaco,"Roboto Mono",monospace;'
+    + 'font-family:inherit;font-weight:600;font-size:11px;line-height:1.6;'
     + 'white-space:nowrap';
 
   function annotateRow(row) {
@@ -667,7 +667,7 @@
     }
     return el;
   }
-  const FONT = 'font:600 12px/1.5 "Lucida Console",Menlo,Monaco,"Roboto Mono",ui-monospace,monospace';
+  const FONT = 'font-family:inherit;font-weight:600;font-size:12px;line-height:1.5';
   const FIELD = `${FONT};background:#0b1a2b;color:#cbd5e1;border:1px solid #1e3a52;`
     + 'border-radius:5px;padding:2px 6px';
 
