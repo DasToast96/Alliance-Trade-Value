@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     1.12.0
+// @version     1.13.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -126,7 +126,7 @@
         + 'rate or per-order net line; shows "error" if neither has ever been seen.',
       feeAppliedNote: (pct) => `\n(${pct}% market fee already deducted from what you receive)`,
       feeAdjustedRate: (val, pct) => `with ${pct}% fee: ask for ${val} instead`,
-      feeError: 'error',
+      feeError: 'open Hub Inventory',
       feeErrorNote: '\n(fee rate unknown — open Hub Inventory once to detect it)',
       feeErrorLine: 'fee rate unknown — open Hub Inventory once to detect it',
       feeToolTipAlliance: 'Alliance Trade has no hub fee — 0% commission.',
@@ -171,7 +171,7 @@
         + 'gesehen wurde.',
       feeAppliedNote: (pct) => `\n(${pct}% Markt-Gebühr bereits vom Erhaltenen abgezogen)`,
       feeAdjustedRate: (val, pct) => `mit ${pct}% Gebühr: verlange stattdessen ${val}`,
-      feeError: 'error',
+      feeError: 'Hub Inventory öffnen',
       feeErrorNote: '\n(Gebühr unbekannt — einmal Hub Inventory öffnen zum Erkennen)',
       feeErrorLine: 'Gebühr unbekannt — einmal Hub Inventory öffnen zum Erkennen',
       feeToolTipAlliance: 'Alliance Trade hat keine Hub-Gebühr — 0% Kommission.',
@@ -846,9 +846,9 @@
       min: '0',
       step: '0.1',
       placeholder: String(def),
-      value: cur != null ? String(cur) : '',
-      style: `${FONT};background:transparent;border:none;outline:none;width:38px;`
-        + 'padding:0;color:#f1f5f9;font-weight:800;font-size:15px',
+      value: String(cur != null ? cur : def),
+      style: `${FONT};background:transparent;border:none;outline:none;width:34px;`
+        + 'padding:0;color:#f1f5f9;font-weight:800;font-size:13px;line-height:1.2',
       title: t('weightPillTitle', r.label, def),
     });
 
@@ -919,7 +919,7 @@
       const input = weightInputsByKey[r.key];
       if (!input || document.activeElement === input) continue; // don't fight the user mid-typing
       const cur = ov[r.key];
-      input.value = cur != null ? String(cur) : '';
+      input.value = String(cur != null ? cur : DEFAULT_WEIGHTS[r.key]);
     }
     if (feeDisplayEl) {
       const pct = feeIsAlliance ? 0 : feePercent();
