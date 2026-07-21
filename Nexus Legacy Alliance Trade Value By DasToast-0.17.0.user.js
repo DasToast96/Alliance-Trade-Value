@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     1.38.0
+// @version     1.41.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -93,8 +93,13 @@
       give: 'Give',
       askExactly: 'ask for exactly',
       amountToGive: 'amount to give',
-      copyShipsNeeded: 'Copy this number to paste into the ship count field',
+      copyShipsNeeded: 'Copy this number to paste into the ship count field '
+        + '(only ship types that can actually carry this resource are counted)',
       notEnoughCargoSpace: 'Not enough cargo space',
+      notEnoughCargoSpaceTooltip: (avail, need) =>
+        `Combined capacity across all eligible ship types: ${fmt(avail)} available vs. `
+        + `${fmt(need)} needed. Some ships (e.g. Tanker, Ore Freighter) can only carry `
+        + 'specific resources and are excluded when they can\'t carry this one.',
       copied: 'copied!',
       amountToGet: 'amount to get',
       pickDifferent: 'pick two different resources',
@@ -140,8 +145,13 @@
       give: 'Geben',
       askExactly: 'verlangen genau',
       amountToGive: 'Menge zum Geben',
-      copyShipsNeeded: 'Diese Zahl kopieren, um sie ins Schiffsanzahl-Feld einzufügen',
+      copyShipsNeeded: 'Diese Zahl kopieren, um sie ins Schiffsanzahl-Feld einzufügen '
+        + '(nur Schiffstypen, die diese Ressource tatsächlich tragen können, zählen mit)',
       notEnoughCargoSpace: 'Nicht genug Frachtraum',
+      notEnoughCargoSpaceTooltip: (avail, need) =>
+        `Kombinierte Kapazität über alle geeigneten Schiffstypen: ${fmt(avail)} verfügbar `
+        + `gegen ${fmt(need)} benötigt. Manche Schiffe (z.B. Tanker, Ore Freighter) können nur `
+        + 'bestimmte Ressourcen tragen und werden ausgeschlossen, wenn sie diese nicht tragen können.',
       copied: 'kopiert!',
       amountToGet: 'Menge zum Erhalten',
       pickDifferent: 'zwei unterschiedliche Ressourcen wählen',
@@ -496,11 +506,30 @@
     // ever loosened.
     if (!row.closest('.alliance-trade-tab') && !row.closest('.market-browse')) return;
 
-    row.querySelectorAll('.nxa-value-badge').forEach((b) => b.remove());
-
     const give = parseAmount(row.querySelector('.market-order-request .market-resource-amount'));
     const get = parseAmount(row.querySelector('.market-order-offer .market-resource-amount'));
-    if (!give || !get) return;
+    if (!give || !get) {
+      row.querySelectorAll('.nxa-value-badge').forEach((b) => b.remove());
+      return;
+    }
+
+    const w = weights();
+    const wGive = w[norm(give.resource)];
+    const wGet = w[norm(get.resource)];
+    const inBrowse = !row.closest('.alliance-trade-tab');
+    const rowFeePct = inBrowse ? (parseNetLine(row) ?? feePercent()) : 0;
+
+    // Skip destroying/rebuilding the badge when nothing relevant changed
+    // since last time — unrelated background refreshes (e.g. the game's
+    // own live counters ticking elsewhere) were otherwise replacing this
+    // element constantly, which raced with clicks and made the pinned
+    // tooltip immediately lose its target.
+    const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|`
+      + `${JSON.stringify(w)}|${rowFeePct}|${inBrowse}`;
+    if (row.dataset.nxaValueSig === signature) return;
+    row.dataset.nxaValueSig = signature;
+
+    row.querySelectorAll('.nxa-value-badge').forEach((b) => b.remove());
 
     // one container holds all our pills, so the observer can ignore its own
     // injections by checking a single class
@@ -508,10 +537,6 @@
     wrap.className = 'nxa-value-badge';
     wrap.style.cssText = 'display:inline-flex;gap:4px;align-items:center;'
       + 'margin-left:6px;vertical-align:middle';
-
-    const w = weights();
-    const wGive = w[norm(give.resource)];
-    const wGet = w[norm(get.resource)];
 
     if (wGive == null || wGet == null) {
       const missing = wGive == null ? give.resource : get.resource;
@@ -528,8 +553,6 @@
       // otherwise fall back to the page-wide detected/cached rate. If
       // neither has ever been seen, don't fabricate a number — show the
       // gross (un-deducted) value and flag it as unknown instead.
-      const inBrowse = !row.closest('.alliance-trade-tab');
-      const rowFeePct = inBrowse ? (parseNetLine(row) ?? feePercent()) : 0;
       const feeUnknown = inBrowse && rowFeePct == null;
       const feeMultiplier = (inBrowse && !feeUnknown) ? (1 - rowFeePct / 100) : 1;
       const getVal = get.amount * wGet * feeMultiplier;
@@ -541,19 +564,19 @@
         + (feeUnknown ? t('feeErrorNote') : (inBrowse ? t('feeAppliedNote', rowFeePct) : ''));
 
       // headline pills: ×ratio (solid) + profit/loss as % (outline). Absolute
-      // value and the resource-equivalent are still one hover away in the
-      // tooltip — they're different views of the same underlying number.
+      // value and the resource-equivalent are still one click/hover away in
+      // the tooltip — they're different views of the same underlying number.
       const ratioPill = document.createElement('span');
       ratioPill.textContent = `×${ratio.toFixed(2)}`;
       ratioPill.style.cssText = PILL
-        + `;color:#06121f;background:${color};border-color:${color}`;
-      ratioPill.title = title;
+        + `;color:#06121f;background:${color};border-color:${color};cursor:help`;
+      attachTooltip(ratioPill, () => title);
 
       const pctPill = document.createElement('span');
       pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
       pctPill.style.cssText = PILL
-        + `;color:${color};background:transparent;border-color:${color}`;
-      pctPill.title = title;
+        + `;color:${color};background:transparent;border-color:${color};cursor:help`;
+      attachTooltip(pctPill, () => title);
 
       wrap.append(ratioPill, pctPill);
     }
@@ -586,10 +609,11 @@
   // ====================================================================
 
   function annotateHistoryRow(row) {
-    row.querySelectorAll('.nxa-history-badge, .nxa-you-marker').forEach((b) => b.remove());
-
     const amounts = row.querySelectorAll('.market-resource-amount');
-    if (amounts.length < 2) return;
+    if (amounts.length < 2) {
+      row.querySelectorAll('.nxa-history-badge, .nxa-you-marker').forEach((b) => b.remove());
+      return;
+    }
     // Perspective fix: like the original script, we value trades from the
     // buyer's (filler's) side, not the order creator's. The row shows
     // "creator gives (left) ⇄ creator gets (right)" — so from the buyer's
@@ -597,12 +621,23 @@
     // the left one.
     const give = parseAmount(amounts[1]);
     const get = parseAmount(amounts[0]);
-    if (!give || !get) return;
+    if (!give || !get) {
+      row.querySelectorAll('.nxa-history-badge, .nxa-you-marker').forEach((b) => b.remove());
+      return;
+    }
 
     const w = weights();
     const wGive = w[norm(give.resource)];
     const wGet = w[norm(get.resource)];
     if (wGive == null || wGet == null) return;  // silently skip unknown resources here
+
+    // History rows never change once written — this signature check makes
+    // almost every later rebuild call a no-op, so a pinned tooltip's
+    // element never gets swapped out from under a click.
+    const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|${JSON.stringify(w)}`;
+    if (row.dataset.nxaHistSig === signature) return;
+    row.dataset.nxaHistSig = signature;
+    row.querySelectorAll('.nxa-history-badge, .nxa-you-marker').forEach((b) => b.remove());
 
     const giveVal = give.amount * wGive;
     const getVal = get.amount * wGet;
@@ -618,8 +653,8 @@
       + 'margin-left:6px;vertical-align:middle';
 
     // headline pills: ×ratio (solid) + profit/loss as % (outline). Absolute
-    // value and the resource-equivalent are still one hover away in the
-    // tooltip.
+    // value and the resource-equivalent are still one click/hover away in
+    // the tooltip.
     const ratioPill = document.createElement('span');
     ratioPill.textContent = `×${ratio.toFixed(2)}`;
     ratioPill.style.cssText = PILL
@@ -687,18 +722,31 @@
   }
 
   function annotateMyOrdersRow(row) {
-    row.querySelectorAll('.nxa-myorder-badge').forEach((b) => b.remove());
-
     const amounts = row.querySelectorAll('.market-resource-amount');
-    if (amounts.length < 2) return;
+    if (amounts.length < 2) {
+      row.querySelectorAll('.nxa-myorder-badge').forEach((b) => b.remove());
+      return;
+    }
     const get = parseAmountTotal(amounts[0]);   // what you (creator) are asking for
     const give = parseAmountTotal(amounts[1]);  // what you (creator) offer in exchange
-    if (!get || !give) return;
+    if (!get || !give) {
+      row.querySelectorAll('.nxa-myorder-badge').forEach((b) => b.remove());
+      return;
+    }
 
     const w = weights();
     const wGive = w[norm(give.resource)];
     const wGet = w[norm(get.resource)];
     if (wGive == null || wGet == null) return;  // silently skip unknown resources here
+
+    // Uses the TOTAL amounts (not the filled/progress part), which stay
+    // constant for the life of the order — so this signature check makes
+    // later rebuild calls a no-op even as the order's fill progress ticks
+    // up, protecting a pinned tooltip's element from being swapped out.
+    const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|${JSON.stringify(w)}`;
+    if (row.dataset.nxaMyOrderSig === signature) return;
+    row.dataset.nxaMyOrderSig = signature;
+    row.querySelectorAll('.nxa-myorder-badge').forEach((b) => b.remove());
 
     const giveVal = give.amount * wGive;
     const getVal = get.amount * wGet;
@@ -716,14 +764,14 @@
     const ratioPill = document.createElement('span');
     ratioPill.textContent = `×${ratio.toFixed(2)}`;
     ratioPill.style.cssText = PILL
-      + `;color:#06121f;background:${color};border-color:${color}`;
-    ratioPill.title = title;
+      + `;color:#06121f;background:${color};border-color:${color};cursor:help`;
+    attachTooltip(ratioPill, () => title);
 
     const pctPill = document.createElement('span');
     pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
     pctPill.style.cssText = PILL
-      + `;color:${color};background:transparent;border-color:${color}`;
-    pctPill.title = title;
+      + `;color:${color};background:transparent;border-color:${color};cursor:help`;
+    attachTooltip(pctPill, () => title);
 
     wrap.append(ratioPill, pctPill);
 
@@ -1307,7 +1355,7 @@
   // Read directly from the order row above the panel — fixed and present
   // immediately, unlike the "Cargo: X/Y needed" line inside the panel,
   // which only appears (and changes) once ships have already been entered.
-  function readOrderMaxAmount(panel) {
+  function readOrderSides(panel) {
     const row = panel.closest('.market-order-row') || panel.parentElement;
     if (!row) return null;
     const parseSide = (sel) => {
@@ -1319,10 +1367,9 @@
         || (el.getAttribute('title') || '').replace(/[\d,.\s]/g, '');
       return Number.isFinite(amount) && amount > 0 ? { amount, resource } : null;
     };
-    const candidates = [parseSide('.market-order-offer'), parseSide('.market-order-request')]
-      .filter(Boolean);
-    if (!candidates.length) return null;
-    return candidates.reduce((a, b) => (b.amount > a.amount ? b : a));
+    const offer = parseSide('.market-order-offer');
+    const request = parseSide('.market-order-request');
+    return (offer || request) ? { offer, request } : null;
   }
 
   // Some ship types can only carry specific resources (per their in-game
@@ -1359,25 +1406,19 @@
     );
     const headerResource = headerAmountEl?.querySelector('img')?.getAttribute('alt')
       || (headerAmountEl?.getAttribute('title') || '').replace(/[\d,.\s]/g, '');
-    const orderMax = readOrderMaxAmount(panel);
-    const needed = orderMax != null ? orderMax.amount : headerQty;
-    const neededResource = norm(orderMax != null ? orderMax.resource : headerResource);
+    const orderSides = readOrderSides(panel);
+    const orderCandidates = orderSides ? [orderSides.offer, orderSides.request].filter(Boolean) : [];
+    const needed = orderCandidates.length
+      ? Math.max(...orderCandidates.map((c) => c.amount))
+      : headerQty;
+    // BOTH resources of the round trip — the fleet has to carry whichever
+    // resource is requested there AND whichever is offered back, so a
+    // restricted ship (Tanker, Ore Freighter) is only usable if it can
+    // carry EVERY resource involved, not just whichever leg is larger.
+    const neededResources = orderCandidates.length
+      ? orderCandidates.map((c) => norm(c.resource))
+      : [norm(headerResource)].filter(Boolean);
     if (!Number.isFinite(needed) || needed <= 0) return;
-
-    // Skip all DOM rebuild work when nothing relevant has actually changed
-    // since the last run. Without this, unrelated page churn (e.g. the
-    // game's own resource counters ticking up) triggers our global
-    // MutationObserver, which re-runs this function and would otherwise
-    // tear down and rebuild the copy-button/badges every single time —
-    // occasionally eating a click that lands right as the old button is
-    // being replaced by an identical new one.
-    const availSig = Array.from(panel.querySelectorAll('.fill-ship-row')).map((row) => {
-      const availEl = row.querySelector('.fill-ship-avail');
-      return availEl ? availEl.textContent.trim() : '';
-    }).join('|');
-    const signature = `${needed}|${neededResource}|${availSig}`;
-    if (panel.dataset.nxaFleetSig === signature) return;
-    panel.dataset.nxaFleetSig = signature;
 
     document.querySelectorAll('.nxa-fleet-cargo-badge').forEach((b) => b.remove());
     document.querySelectorAll('.nxa-fleet-insufficient-badge').forEach((b) => b.remove());
@@ -1395,10 +1436,13 @@
       if (!nameEl || !statsEl) return;
       const name = nameEl.textContent.trim();
       if (!CARGO_SHIP_NAMES.has(name)) return;
-      // skip ship types that flat-out can't carry the resource in question
-      // (e.g. Tanker is hydrogen-only, Ore Freighter is ore/silicates-only)
+      // skip ship types that can't carry EVERY resource in this round trip
+      // (e.g. Tanker is hydrogen-only — useless here even if the delivery
+      // leg happens to be hydrogen, because it still can't carry back
+      // whatever the other side of the trade is)
       const allowed = shipAllowedResources(name);
-      if (allowed && neededResource && !allowed.has(neededResource)) return;
+      if (allowed && neededResources.length
+        && !neededResources.every((r) => allowed.has(r))) return;
       const capMatch = statsEl.textContent.match(/Cargo:\s*([\d.,]+)/);
       if (!capMatch) return;
       const capacity = parseInt(capMatch[1].replace(/[^\d]/g, ''), 10);
@@ -1474,6 +1518,7 @@
         const warn = document.createElement('span');
         warn.className = 'nxa-fleet-insufficient-badge';
         warn.textContent = t('notEnoughCargoSpace');
+        warn.title = t('notEnoughCargoSpaceTooltip', totalAvailableCapacity, needed);
         warn.style.cssText = PILL
           + ';display:inline-flex;align-items:center;margin-left:6px;vertical-align:middle;'
           + 'color:#f87171;background:transparent;border-color:#f87171;font-size:calc(1em + 3px)';
