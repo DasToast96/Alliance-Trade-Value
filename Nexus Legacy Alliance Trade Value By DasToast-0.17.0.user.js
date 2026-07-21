@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     1.13.0
+// @version     1.38.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -93,6 +93,9 @@
       give: 'Give',
       askExactly: 'ask for exactly',
       amountToGive: 'amount to give',
+      copyShipsNeeded: 'Copy this number to paste into the ship count field',
+      notEnoughCargoSpace: 'Not enough cargo space',
+      copied: 'copied!',
       amountToGet: 'amount to get',
       pickDifferent: 'pick two different resources',
       noWeightRate: 'no weight set for one of these — check the userscript menu',
@@ -102,10 +105,10 @@
       swapTooltip: 'Swap Give and Ask For',
       ratios: 'Ratios',
       ratiosTooltip: 'These are the default ratios used to value trades. Type a number to override.',
+      resetRatios: 'Reset Ratios',
+      resetRatiosTooltip: 'Reset all resource ratios back to their defaults (does not affect the fee).',
       weightPillTitle: (label, def) => `${label} — blank use the default (${def})`,
       noWeightPillTitle: (missing) => `No weight set for "${missing}" — add it via the userscript menu.`,
-      scamLabel: 'SCAMMER',
-      scamTitle: 'Fun fact: this order pays well under fair value.',
       youWereBuyer: 'You were the buyer on this trade.',
       buyerTitle: (delta, equivGet, getResource) =>
         `buyer ${delta >= 0 ? 'profit' : 'loss'} ${delta >= 0 ? '+' : ''}${fmt(delta)} value\n`
@@ -137,6 +140,9 @@
       give: 'Geben',
       askExactly: 'verlangen genau',
       amountToGive: 'Menge zum Geben',
+      copyShipsNeeded: 'Diese Zahl kopieren, um sie ins Schiffsanzahl-Feld einzufügen',
+      notEnoughCargoSpace: 'Nicht genug Frachtraum',
+      copied: 'kopiert!',
       amountToGet: 'Menge zum Erhalten',
       pickDifferent: 'zwei unterschiedliche Ressourcen wählen',
       noWeightRate: 'für eine davon ist kein Gewicht gesetzt — im Userscript-Menü prüfen',
@@ -146,10 +152,10 @@
       swapTooltip: 'Geben und Verlangen tauschen',
       ratios: 'Verhältnisse',
       ratiosTooltip: 'Das sind die Standard-Verhältnisse zur Bewertung von Trades. Zahl eingeben zum Überschreiben.',
+      resetRatios: 'Ratios zurücksetzen',
+      resetRatiosTooltip: 'Alle Ressourcen-Verhältnisse auf den Standard zurücksetzen (betrifft nicht die Gebühr).',
       weightPillTitle: (label, def) => `${label} — leer lassen für den Standardwert (${def})`,
       noWeightPillTitle: (missing) => `Kein Gewicht für "${missing}" gesetzt — über das Userscript-Menü hinzufügen.`,
-      scamLabel: 'ABZOCKER',
-      scamTitle: 'Nur zum Spaß: diese Order zahlt deutlich unter fairem Wert.',
       youWereBuyer: 'Du warst der Käufer in diesem Trade.',
       buyerTitle: (delta, equivGet, getResource) =>
         `Käufer-${delta >= 0 ? 'Gewinn' : 'Verlust'} ${delta >= 0 ? '+' : ''}${fmt(delta)} Wert\n`
@@ -221,6 +227,44 @@
     }
     GM_setValue(WEIGHTS_KEY, JSON.stringify(clean));
     cachedOverrides = clean;
+  }
+  // Updates the SAME in-memory cache used by overrides()/weights()
+  // immediately (synchronously) — used by the per-resource weight fields
+  // instead of saveOverrides() so that any concurrent refresh (e.g. the
+  // global MutationObserver reacting to unrelated game DOM churn, which can
+  // fire independently of and faster than our own debounce) always reads
+  // the value the user just set, never a stale one. The actual disk write
+  // is still debounced separately (persistWeightsDebounced) since that part
+  // doesn't need to be synchronous.
+  let persistWeightsTimer = null;
+  function setOverrideNow(key, rawVal) {
+    const merged = { ...overrides() };
+    const val = (rawVal == null ? '' : String(rawVal)).trim();
+    if (val === '') delete merged[key];
+    else {
+      const n = Number(val);
+      if (Number.isFinite(n)) merged[key] = n;
+    }
+    const clean = {};
+    for (const [k, v] of Object.entries(merged)) {
+      if (v == null || v === '') continue;
+      const n = Number(v);
+      if (Number.isFinite(n)) clean[norm(k)] = n;
+    }
+    cachedOverrides = clean;  // visible to overrides()/weights() right away
+    clearTimeout(persistWeightsTimer);
+    persistWeightsTimer = setTimeout(() => {
+      try { GM_setValue(WEIGHTS_KEY, JSON.stringify(clean)); } catch (e) { /* ignore */ }
+    }, 250);
+    return clean;
+  }
+  // Clears EVERY resource override at once (the Ratios "reset" button) —
+  // an infrequent, deliberate action, so persist immediately rather than
+  // debouncing like setOverrideNow() does for per-keystroke edits.
+  function resetAllOverridesNow() {
+    cachedOverrides = {};
+    clearTimeout(persistWeightsTimer);
+    try { GM_setValue(WEIGHTS_KEY, JSON.stringify({})); } catch (e) { /* ignore */ }
   }
   // effective weights = defaults with overrides layered on top
   function weights() {
@@ -300,7 +344,11 @@
   }
 
   function refreshAfterWeightChange() {
-    cachedOverrides = null; // force a re-read from storage next call
+    // NOTE: deliberately NOT nulling cachedOverrides here — saveOverrides()
+    // already updated it directly and correctly. Forcing a reload from
+    // GM storage immediately after a write can race with a slightly-delayed
+    // GM_setValue flush and read back the stale previous value, which is
+    // what caused the field to visibly "snap back" right after a change.
     annotateAll();
     annotateHistory();
     annotateMyOrders();
@@ -348,6 +396,94 @@
     if (ratio >= 0.85) return '#fb923c';
     return '#f87171';
   }
+
+  // ====================================================================
+  //  Custom hover/click tooltip
+  //  A single shared tooltip element, reused for every badge that needs
+  //  one. Shows on hover (positioned at the cursor) like a normal tooltip,
+  //  but ALSO supports click-to-pin: click once to keep it visible (auto-
+  //  hides after 4s), click again to dismiss immediately. This exists
+  //  alongside the native `title` attribute (kept as a fallback/
+  //  accessibility aid) because native tooltips are unreliable in Firefox.
+  // ====================================================================
+
+  let sharedTooltipEl = null;
+  function getSharedTooltip() {
+    if (sharedTooltipEl && sharedTooltipEl.isConnected) return sharedTooltipEl;
+    sharedTooltipEl = document.createElement('div');
+    sharedTooltipEl.className = 'nxa-tooltip';
+    sharedTooltipEl.style.cssText = 'position:fixed;z-index:2147483000;'
+      + 'background:#0b1a2b;color:#e2e8f0;border:1px solid #1e3a52;border-radius:6px;'
+      + 'padding:6px 10px;font-family:inherit;font-size:12px;line-height:1.5;'
+      + 'white-space:pre-line;pointer-events:none;display:none;max-width:280px;'
+      + 'box-shadow:0 4px 14px rgba(0,0,0,0.45)';
+    document.body.appendChild(sharedTooltipEl);
+    return sharedTooltipEl;
+  }
+
+  function positionTooltip(tip, x, y) {
+    const margin = 10;
+    tip.style.left = '0px';
+    tip.style.top = '0px';
+    tip.style.display = 'block';
+    const rect = tip.getBoundingClientRect();
+    let left = x + 14;
+    let top = y + 18;
+    if (left + rect.width > window.innerWidth - margin) left = x - rect.width - 14;
+    if (top + rect.height > window.innerHeight - margin) top = y - rect.height - 14;
+    tip.style.left = `${Math.max(margin, left)}px`;
+    tip.style.top = `${Math.max(margin, top)}px`;
+  }
+
+  // Attaches hover+click-to-pin tooltip behavior to `el`. `getText` is
+  // called fresh each time the tooltip is shown, so the content always
+  // reflects the badge's current values (e.g. after a weight change).
+  let currentPinnedEl = null;
+
+  function attachTooltip(el, getText) {
+    let hideTimer = null;
+
+    function show(x, y) {
+      const tip = getSharedTooltip();
+      tip.textContent = getText();
+      positionTooltip(tip, x, y);
+    }
+    function hide() {
+      if (sharedTooltipEl) sharedTooltipEl.style.display = 'none';
+    }
+
+    el.addEventListener('mouseenter', (e) => { if (currentPinnedEl !== el) show(e.clientX, e.clientY); });
+    el.addEventListener('mousemove', (e) => {
+      if (currentPinnedEl !== el && sharedTooltipEl && sharedTooltipEl.style.display === 'block') {
+        positionTooltip(sharedTooltipEl, e.clientX, e.clientY);
+      }
+    });
+    el.addEventListener('mouseleave', () => { if (currentPinnedEl !== el) hide(); });
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearTimeout(hideTimer);
+      if (currentPinnedEl === el) {
+        currentPinnedEl = null;
+        hide();
+      } else {
+        currentPinnedEl = el;
+        show(e.clientX, e.clientY);
+        hideTimer = setTimeout(() => {
+          if (currentPinnedEl === el) currentPinnedEl = null;
+          hide();
+        }, 4000);
+      }
+    });
+  }
+
+  // hide any pinned tooltip if the user clicks anywhere else on the page —
+  // checked by target identity rather than relying solely on
+  // stopPropagation() having stopped the event from reaching here
+  document.addEventListener('click', (e) => {
+    if (e.target === currentPinnedEl) return;
+    currentPinnedEl = null;
+    if (sharedTooltipEl) sharedTooltipEl.style.display = 'none';
+  });
 
   const PILL = 'padding:0 6px;border:1px solid;border-radius:6px;'
     + 'font-family:inherit;font-weight:700;font-size:inherit;line-height:1.6;'
@@ -420,17 +556,6 @@
       pctPill.title = title;
 
       wrap.append(ratioPill, pctPill);
-
-      // fun fact, live orders only (not Trade History): a steep red ratio
-      // gets called out with an extra "SCAMMER" field, just for laughs.
-      if (color === '#f87171') {
-        const scamPill = document.createElement('span');
-        scamPill.textContent = t('scamLabel');
-        scamPill.title = t('scamTitle');
-        scamPill.style.cssText = PILL
-          + ';color:#f87171;background:transparent;border-color:#f87171;font-weight:800';
-        wrap.appendChild(scamPill);
-      }
     }
 
     // mount right after the game's own rate "(1:1.81)"
@@ -453,8 +578,7 @@
   //  Trade History value badges
   //  Same ratio/value math as the live orders above, applied to completed
   //  (and cancelled) Trade History entries — so you can see in hindsight
-  //  who came out ahead on a given trade. No "SCAMMER" fun-fact tag here on
-  //  purpose — that's only for the live, still-open orders further up.
+  //  who came out ahead on a given trade.
   //
   //  Real markup: .market-trade-history > .market-trade-row, each row
   //  holding exactly two .market-resource-amount spans in order — give
@@ -499,14 +623,14 @@
     const ratioPill = document.createElement('span');
     ratioPill.textContent = `×${ratio.toFixed(2)}`;
     ratioPill.style.cssText = PILL
-      + `;color:#06121f;background:${color};border-color:${color}`;
-    ratioPill.title = title;
+      + `;color:#06121f;background:${color};border-color:${color};cursor:help`;
+    attachTooltip(ratioPill, () => title);
 
     const pctPill = document.createElement('span');
     pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
     pctPill.style.cssText = PILL
-      + `;color:${color};background:transparent;border-color:${color}`;
-    pctPill.title = title;
+      + `;color:${color};background:transparent;border-color:${color};cursor:help`;
+    attachTooltip(pctPill, () => title);
 
     wrap.append(ratioPill, pctPill);
 
@@ -693,8 +817,24 @@
     let giveKey = 'ore';
     let getKey = 'silicates';
 
-    const giveAmount = h('input', { type: 'number', min: '0', step: 'any',
-      placeholder: t('amountToGive'), style: `${FIELD_NUM};width:130px` });
+    const giveAmount = h('input', { type: 'text', inputmode: 'decimal',
+      placeholder: t('amountToGive'),
+      style: `${FONT_NUM};background:transparent;border:none;outline:none;`
+        + 'width:100%;padding:0;color:#f1f5f9' });
+    const giveStepBtn = (dir, label) => h('button', { type: 'button', tabIndex: '-1',
+      onclick: () => {
+        const cur = Number(giveAmount.value);
+        const base = Number.isFinite(cur) ? cur : 0;
+        giveAmount.value = String(Math.max(0, Math.round((base + dir) * 100) / 100));
+        recalc();
+      }, style: `${FONT};color:#94a3b8;background:transparent;border:none;cursor:pointer;`
+        + 'padding:0;width:14px;height:14px;line-height:1;font-size:11px;display:flex;'
+        + 'align-items:center;justify-content:center' }, label);
+    const giveSteppers = h('span', { style: 'display:flex;flex-direction:column;gap:1px' },
+      giveStepBtn(1, '▲'), giveStepBtn(-1, '▼'));
+    const giveAmountWrap = h('span', { style: `${FIELD_NUM};display:flex;align-items:center;`
+      + 'justify-content:space-between;gap:4px;padding:2px 4px 2px 6px;width:130px' },
+      giveAmount, giveSteppers);
     const getOutput = h('input', { type: 'text', readonly: 'true',
       placeholder: t('amountToGet'), style: `${FIELD_NUM};width:150px;color:#4ade80` });
     const rateNote = h('div', { style: 'display:flex;flex-direction:column;gap:2px' },
@@ -792,7 +932,7 @@
       h('div', { style: `${FONT};color:#e2e8f0` }, t('calcTitle')),
       h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' },
         h('span', { style: `${FONT};color:#94a3b8` }, t('give')),
-        giveAmount, giveSel,
+        giveAmountWrap, giveSel,
         h('button', { type: 'button', title: t('swapTooltip'), onclick: (e) => {
           const tmpKey = giveKey; giveKey = getKey; getKey = tmpKey;
           giveSel.value = giveKey; getSel.value = getKey;
@@ -842,28 +982,41 @@
         + `background:${FALLBACK_COLOR[r.key] || '#64748b'}` });
 
     const input = h('input', {
-      type: 'number',
-      min: '0',
-      step: '0.1',
+      type: 'text',
+      inputmode: 'decimal',
       placeholder: String(def),
       value: String(cur != null ? cur : def),
       style: `${FONT};background:transparent;border:none;outline:none;width:34px;`
-        + 'padding:0;color:#f1f5f9;font-weight:800;font-size:13px;line-height:1.2',
+        + `padding:0;color:${cur != null ? '#f1f5f9' : '#64748b'};font-weight:800;`
+        + 'font-size:14px;line-height:1.2',
       title: t('weightPillTitle', r.label, def),
     });
 
-    let debounce = null;
-    input.oninput = () => {
-      clearTimeout(debounce);
-      debounce = setTimeout(() => {
-        const current = overrides();
-        const val = input.value.trim();
-        if (val === '') delete current[r.key];
-        else current[r.key] = Number(val);
-        saveOverrides(current);
-        refreshAfterWeightChange();
-      }, 250);
-    };
+    function updateColor() {
+      const isOverride = r.key in overrides();
+      input.style.color = isOverride ? '#f1f5f9' : '#64748b';
+    }
+
+    function commit() {
+      setOverrideNow(r.key, input.value);
+      updateColor();
+      refreshAfterWeightChange();
+    }
+    input.oninput = commit;
+
+    function step(dir) {
+      const cur2 = Number(input.value);
+      const base = Number.isFinite(cur2) ? cur2 : def;
+      const next = Math.max(0, Math.round((base + dir * 0.1) * 10) / 10);
+      input.value = String(next);
+      commit();
+    }
+    const stepBtn = (dir, label) => h('button', { type: 'button', tabIndex: '-1',
+      onclick: () => step(dir), style: `${FONT};color:#94a3b8;background:transparent;`
+        + 'border:none;cursor:pointer;padding:0;width:14px;height:14px;line-height:1;'
+        + 'font-size:11px;display:flex;align-items:center;justify-content:center' }, label);
+    const steppers = h('span', { style: 'display:flex;flex-direction:column;gap:1px' },
+      stepBtn(1, '▲'), stepBtn(-1, '▼'));
 
     weightInputsByKey[r.key] = input;
 
@@ -872,7 +1025,7 @@
       style: 'display:flex;align-items:center;justify-content:center;gap:4px;'
         + 'background:#0f1b2e;border:1px solid #1e3a52;border-radius:999px;'
         + 'padding:2px 8px;box-sizing:border-box',
-    }, icon, input);
+    }, icon, input, steppers);
   }
 
   let feeDisplayEl = null;
@@ -908,7 +1061,17 @@
           h('span', { style: `${FONT};color:#e2e8f0` }, t('ratios'))),
         buildFeeControl(isAlliance)),
       h('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:6px' },
-        ...RESOURCES.map((r) => buildWeightPill(r))));
+        ...RESOURCES.map((r) => buildWeightPill(r)),
+        h('div', { style: 'grid-column:span 2;display:flex;align-items:center;'
+          + 'justify-content:center' },
+          h('button', { type: 'button', title: t('resetRatiosTooltip'), onclick: () => {
+            resetAllOverridesNow();
+            refreshAfterWeightChange();
+          }, onmouseenter: (e) => { e.target.style.background = '#16324a'; },
+          onmouseleave: (e) => { e.target.style.background = '#0f1b2e'; },
+          style: `${FONT};color:#94a3b8;background:#0f1b2e;border:1px solid #1e3a52;`
+            + 'border-radius:999px;cursor:pointer;padding:5px 16px;font-size:13px;width:100%' },
+            t('resetRatios')))));
   }
 
   // Keep the panel's own inputs in sync when weights/fee change from
@@ -920,6 +1083,7 @@
       if (!input || document.activeElement === input) continue; // don't fight the user mid-typing
       const cur = ov[r.key];
       input.value = String(cur != null ? cur : DEFAULT_WEIGHTS[r.key]);
+      input.style.color = cur != null ? '#f1f5f9' : '#64748b';
     }
     if (feeDisplayEl) {
       const pct = feeIsAlliance ? 0 : feePercent();
@@ -1101,21 +1265,129 @@
   //  .fill-ship-stats ("Cargo:4.200 SPD:4").
   // ====================================================================
 
+  // navigator.clipboard.writeText() can hang or silently fail in a
+  // userscript sandbox (async permission negotiation, document-focus
+  // quirks) — try it, but always fall back to the older synchronous
+  // execCommand('copy') method via a hidden textarea, which doesn't depend
+  // on any of that and just works immediately.
+  function copyText(text) {
+    let done = false;
+    const fallback = () => {
+      if (done) return;
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+      document.body.removeChild(ta);
+    };
+    try {
+      navigator.clipboard.writeText(text).then(() => { done = true; }).catch(fallback);
+    } catch (e) { /* ignore */ }
+    // don't wait on the promise — run the reliable fallback right away too;
+    // whichever finishes first, the clipboard ends up with the right text
+    fallback();
+  }
+
   const CARGO_SHIP_NAMES = new Set([
     'Bulk Carrier', 'Großfrachter', 'Massengutfrachter',
     'Transport Shuttle', 'Transport-Shuttle', 'Transportshuttle',
+    'Tanker',
+    'Freighter', 'Frachter',
+    'Ore Freighter', 'Erzfrachter', 'Ore-Frachter',
   ]);
 
-  function annotateFleetCargo() {
-    document.querySelectorAll('.nxa-fleet-cargo-badge').forEach((b) => b.remove());
+  // The fleet has to cover a round trip: carry the requested resource TO
+  // the creator, then carry the offered resource BACK — cargo space is
+  // reused sequentially between the two legs, so the binding constraint is
+  // the LARGER of the order's own offer/request amounts, not just the
+  // amount shown in the fill panel's header (which only reflects one leg).
+  // Read directly from the order row above the panel — fixed and present
+  // immediately, unlike the "Cargo: X/Y needed" line inside the panel,
+  // which only appears (and changes) once ships have already been entered.
+  function readOrderMaxAmount(panel) {
+    const row = panel.closest('.market-order-row') || panel.parentElement;
+    if (!row) return null;
+    const parseSide = (sel) => {
+      const el = row.querySelector(`${sel} .market-resource-amount`);
+      if (!el) return null;
+      const strong = el.querySelector('strong');
+      const amount = parseInt((strong?.textContent || '').replace(/[^\d]/g, ''), 10);
+      const resource = el.querySelector('img')?.getAttribute('alt')
+        || (el.getAttribute('title') || '').replace(/[\d,.\s]/g, '');
+      return Number.isFinite(amount) && amount > 0 ? { amount, resource } : null;
+    };
+    const candidates = [parseSide('.market-order-offer'), parseSide('.market-order-request')]
+      .filter(Boolean);
+    if (!candidates.length) return null;
+    return candidates.reduce((a, b) => (b.amount > a.amount ? b : a));
+  }
 
+  // Some ship types can only carry specific resources (per their in-game
+  // description): Tanker is hydrogen-only ("cannot carry ore/silicates/
+  // alloys"); Ore Freighter is ore-and-silicates-only ("cannot carry
+  // hydrogen or alloys"). Bulk Carrier / Transport Shuttle / Freighter have
+  // no such restriction. Returns null for "no restriction", otherwise a Set
+  // of norm()'d resource keys the ship is allowed to carry.
+  function shipAllowedResources(name) {
+    const n = norm(name);
+    if (n === 'tanker') return new Set(['hydrogen']);
+    if (n === 'orefreighter' || n === 'erzfrachter') return new Set(['ore', 'silicates']);
+    return null;
+  }
+
+  function annotateFleetCargo() {
     const panel = document.querySelector('.alliance-fill-panel');
-    if (!panel) return;
+    if (!panel) {
+      // panel closed — clean up any leftovers just in case
+      document.querySelectorAll('.nxa-fleet-cargo-badge').forEach((b) => b.remove());
+      document.querySelectorAll('.nxa-fleet-insufficient-badge').forEach((b) => b.remove());
+      document.querySelectorAll('.fill-ship-row').forEach((row) => {
+        row.style.removeProperty('box-shadow');
+        row.style.removeProperty('border-radius');
+      });
+      return;
+    }
 
     const header = panel.querySelector('.fill-panel-header');
-    const strongEl = header && header.querySelector('.market-resource-amount strong');
-    const needed = parseInt((strongEl?.textContent || '').replace(/[^\d]/g, ''), 10);
-    if (!header || !Number.isFinite(needed) || needed <= 0) return;
+    if (!header) return;
+    const headerAmountEl = header.querySelector('.market-resource-amount');
+    const headerQty = parseInt(
+      (headerAmountEl?.querySelector('strong')?.textContent || '').replace(/[^\d]/g, ''), 10,
+    );
+    const headerResource = headerAmountEl?.querySelector('img')?.getAttribute('alt')
+      || (headerAmountEl?.getAttribute('title') || '').replace(/[\d,.\s]/g, '');
+    const orderMax = readOrderMaxAmount(panel);
+    const needed = orderMax != null ? orderMax.amount : headerQty;
+    const neededResource = norm(orderMax != null ? orderMax.resource : headerResource);
+    if (!Number.isFinite(needed) || needed <= 0) return;
+
+    // Skip all DOM rebuild work when nothing relevant has actually changed
+    // since the last run. Without this, unrelated page churn (e.g. the
+    // game's own resource counters ticking up) triggers our global
+    // MutationObserver, which re-runs this function and would otherwise
+    // tear down and rebuild the copy-button/badges every single time —
+    // occasionally eating a click that lands right as the old button is
+    // being replaced by an identical new one.
+    const availSig = Array.from(panel.querySelectorAll('.fill-ship-row')).map((row) => {
+      const availEl = row.querySelector('.fill-ship-avail');
+      return availEl ? availEl.textContent.trim() : '';
+    }).join('|');
+    const signature = `${needed}|${neededResource}|${availSig}`;
+    if (panel.dataset.nxaFleetSig === signature) return;
+    panel.dataset.nxaFleetSig = signature;
+
+    document.querySelectorAll('.nxa-fleet-cargo-badge').forEach((b) => b.remove());
+    document.querySelectorAll('.nxa-fleet-insufficient-badge').forEach((b) => b.remove());
+    document.querySelectorAll('.fill-ship-row').forEach((row) => {
+      row.style.removeProperty('box-shadow');
+      row.style.removeProperty('border-radius');
+    });
+
+    let totalAvailableCapacity = 0;
+    let sawAnyCargoShipRow = false;
 
     panel.querySelectorAll('.fill-ship-row').forEach((row) => {
       const nameEl = row.querySelector('.fill-ship-name');
@@ -1123,18 +1395,91 @@
       if (!nameEl || !statsEl) return;
       const name = nameEl.textContent.trim();
       if (!CARGO_SHIP_NAMES.has(name)) return;
+      // skip ship types that flat-out can't carry the resource in question
+      // (e.g. Tanker is hydrogen-only, Ore Freighter is ore/silicates-only)
+      const allowed = shipAllowedResources(name);
+      if (allowed && neededResource && !allowed.has(neededResource)) return;
       const capMatch = statsEl.textContent.match(/Cargo:\s*([\d.,]+)/);
       if (!capMatch) return;
       const capacity = parseInt(capMatch[1].replace(/[^\d]/g, ''), 10);
       if (!Number.isFinite(capacity) || capacity <= 0) return;
       const shipsNeeded = Math.ceil(needed / capacity);
-      const pill = document.createElement('span');
-      pill.className = 'nxa-fleet-cargo-badge';
-      pill.textContent = `${shipsNeeded}× needed`;
-      pill.style.cssText = PILL
-        + ';color:#38bdf8;background:transparent;border-color:#38bdf8;margin-left:10px';
-      statsEl.parentNode.insertBefore(pill, statsEl.nextSibling);
+
+      const availEl = row.querySelector('.fill-ship-avail');
+      const availMatch = availEl && availEl.textContent.match(/(\d+)/);
+      const available = availMatch ? parseInt(availMatch[1], 10) : null;
+
+      // tally combined capacity across BOTH cargo ship types, regardless
+      // of whether this specific type alone is enough — used below to
+      // check if you have enough cargo space at all, even split across types
+      if (available != null) {
+        sawAnyCargoShipRow = true;
+        totalAvailableCapacity += available * capacity;
+      }
+
+      // skip showing a per-row badge if you don't own enough of THIS ship
+      // type alone to cover the delivery — showing "186× needed" when you
+      // only have 50 would be misleading, since that ship type alone can't
+      // do it (the combined-capacity warning below covers this case instead)
+      if (available != null && available < shipsNeeded) return;
+
+      // highlight the whole row with a blue outline — box-shadow instead
+      // of border so it doesn't add to the row's box size and shift the
+      // surrounding layout
+      row.style.boxShadow = 'inset 0 0 0 1px #3b82f6';
+      row.style.borderRadius = '8px';
+
+      // single flat pill: number + a plain copy glyph, no divider — the
+      // WHOLE pill is one real <button> so it's unmistakably clickable
+      const wrap = document.createElement('button');
+      wrap.type = 'button';
+      wrap.className = 'nxa-fleet-cargo-badge';
+      wrap.title = t('copyShipsNeeded');
+      wrap.style.cssText = PILL
+        + ';display:inline-flex;align-items:center;gap:5px;margin-right:10px;cursor:pointer;'
+        + 'color:#38bdf8;background:transparent;border-color:#38bdf8;font-size:calc(1em + 2px)';
+      wrap.onmouseenter = () => { wrap.style.background = 'rgba(56,189,248,0.12)'; };
+      wrap.onmouseleave = () => { wrap.style.background = 'transparent'; };
+
+      const label = document.createElement('span');
+      const trueLabel = `${shipsNeeded}× needed`;
+      label.textContent = trueLabel;
+      const icon = document.createElement('span');
+      icon.textContent = '⧉';
+      icon.style.cssText = 'opacity:0.75';
+
+      wrap.append(label, icon);
+      let copyCooldown = null;
+      wrap.onclick = () => {
+        if (copyCooldown) return;  // ignore clicks while the "copied" state is showing
+        copyText(String(shipsNeeded));
+        label.textContent = t('copied');
+        copyCooldown = setTimeout(() => {
+          label.textContent = trueLabel;
+          copyCooldown = null;
+        }, 1000);
+      };
+
+      statsEl.parentNode.insertBefore(wrap, statsEl);
     });
+
+    // combined-capacity warning: even split across BOTH cargo ship types,
+    // you don't own enough total cargo space to ever cover this delivery —
+    // shown in the order-info row itself (next to our ratio/value badge,
+    // right before the Close button), not inside the ship list
+    if (sawAnyCargoShipRow && totalAvailableCapacity < needed) {
+      const orderRow = panel.closest('.market-order-row');
+      const info = orderRow && orderRow.querySelector('.market-order-info');
+      if (info) {
+        const warn = document.createElement('span');
+        warn.className = 'nxa-fleet-insufficient-badge';
+        warn.textContent = t('notEnoughCargoSpace');
+        warn.style.cssText = PILL
+          + ';display:inline-flex;align-items:center;margin-left:6px;vertical-align:middle;'
+          + 'color:#f87171;background:transparent;border-color:#f87171;font-size:calc(1em + 3px)';
+        info.appendChild(warn);
+      }
+    }
   }
 
   // ====================================================================
@@ -1182,10 +1527,11 @@
       || n.classList?.contains('nxa-calc-panel') || n.classList?.contains('nxa-history-badge')
       || n.classList?.contains('nxa-you-marker') || n.classList?.contains('nxa-want-hint')
       || n.classList?.contains('nxa-fleet-cargo-badge') || n.classList?.contains('nxa-myorder-badge')
+      || n.classList?.contains('nxa-fleet-insufficient-badge')
       || n.closest?.('.nxa-value-badge') || n.closest?.('.nxa-calc-panel')
       || n.closest?.('.nxa-history-badge') || n.closest?.('.nxa-you-marker')
       || n.closest?.('.nxa-want-hint') || n.closest?.('.nxa-fleet-cargo-badge')
-      || n.closest?.('.nxa-myorder-badge'));
+      || n.closest?.('.nxa-myorder-badge') || n.closest?.('.nxa-fleet-insufficient-badge'));
   }
 
   function refreshAll() {
