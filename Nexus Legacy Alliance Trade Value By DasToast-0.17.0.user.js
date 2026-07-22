@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     1.41.0
+// @version     1.42.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -486,6 +486,26 @@
     });
   }
 
+  // Hover-only variant (no click-to-pin) — for elements that already have
+  // their own click behavior (e.g. a copy-to-clipboard button), so we
+  // don't compete with that click for control of the tooltip's pin state.
+  function attachHoverTooltip(el, getText) {
+    el.addEventListener('mouseenter', (e) => {
+      if (currentPinnedEl === el) return;
+      const tip = getSharedTooltip();
+      tip.textContent = getText();
+      positionTooltip(tip, e.clientX, e.clientY);
+    });
+    el.addEventListener('mousemove', (e) => {
+      if (currentPinnedEl !== el && sharedTooltipEl && sharedTooltipEl.style.display === 'block') {
+        positionTooltip(sharedTooltipEl, e.clientX, e.clientY);
+      }
+    });
+    el.addEventListener('mouseleave', () => {
+      if (currentPinnedEl !== el && sharedTooltipEl) sharedTooltipEl.style.display = 'none';
+    });
+  }
+
   // hide any pinned tooltip if the user clicks anywhere else on the page —
   // checked by target identity rather than relying solely on
   // stopPropagation() having stopped the event from reaching here
@@ -542,8 +562,8 @@
       const missing = wGive == null ? give.resource : get.resource;
       const pill = document.createElement('span');
       pill.textContent = `? ${missing}`;
-      pill.title = t('noWeightPillTitle', missing);
-      pill.style.cssText = PILL + ';color:#94a3b8;border-color:#475569';
+      pill.style.cssText = PILL + ';color:#94a3b8;border-color:#475569;cursor:help';
+      attachTooltip(pill, () => t('noWeightPillTitle', missing));
       wrap.appendChild(pill);
     } else {
       const giveVal = give.amount * wGive;
@@ -683,8 +703,8 @@
       const marker = document.createElement('span');
       marker.className = 'nxa-you-marker';
       marker.textContent = ' 🙋';
-      marker.title = t('youWereBuyer');
-      marker.style.cssText = `${FONT};color:#4ade80`;
+      marker.style.cssText = `${FONT};color:#4ade80;cursor:help`;
+      attachTooltip(marker, () => t('youWereBuyer'));
       partySpan.appendChild(marker);
     }
   }
@@ -981,16 +1001,20 @@
       h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' },
         h('span', { style: `${FONT};color:#94a3b8` }, t('give')),
         giveAmountWrap, giveSel,
-        h('button', { type: 'button', title: t('swapTooltip'), onclick: (e) => {
-          const tmpKey = giveKey; giveKey = getKey; getKey = tmpKey;
-          giveSel.value = giveKey; getSel.value = getKey;
-          if (getOutput.value !== '') giveAmount.value = getOutput.value;
-          recalc();
-        }, onmouseenter: (e) => { e.target.style.background = '#16324a'; },
-        onmouseleave: (e) => { e.target.style.background = '#0f2437'; },
-        style: `${FONT};color:#38bdf8;font-weight:800;background:#0f2437;`
-          + 'border:1px solid #1e3a52;border-radius:6px;cursor:pointer;'
-          + 'padding:2px 8px;line-height:1' }, '⇄'),
+        (() => {
+          const swapBtn = h('button', { type: 'button', onclick: (e) => {
+            const tmpKey = giveKey; giveKey = getKey; getKey = tmpKey;
+            giveSel.value = giveKey; getSel.value = getKey;
+            if (getOutput.value !== '') giveAmount.value = getOutput.value;
+            recalc();
+          }, onmouseenter: (e) => { e.target.style.background = '#16324a'; },
+          onmouseleave: (e) => { e.target.style.background = '#0f2437'; },
+          style: `${FONT};color:#38bdf8;font-weight:800;background:#0f2437;`
+            + 'border:1px solid #1e3a52;border-radius:6px;cursor:pointer;'
+            + 'padding:2px 8px;line-height:1' }, '⇄');
+          attachTooltip(swapBtn, () => t('swapTooltip'));
+          return swapBtn;
+        })(),
         h('span', { style: `${FONT};color:#94a3b8` }, t('askExactly')),
         getOutput, getSel),
       h('div', { style: 'margin-top:6px' }, rateNote),
@@ -1025,8 +1049,9 @@
     const iconSrc = resourceIconSrc(r.key);
     const icon = iconSrc
       ? h('img', { src: iconSrc, alt: r.label,
-        style: 'width:16px;height:16px;object-fit:contain;flex:none;border-radius:50%' })
-      : h('span', { style: 'width:12px;height:12px;border-radius:50%;flex:none;'
+        style: 'width:16px;height:16px;object-fit:contain;flex:none;border-radius:50%;'
+          + 'cursor:help' })
+      : h('span', { style: 'width:12px;height:12px;border-radius:50%;flex:none;cursor:help;'
         + `background:${FALLBACK_COLOR[r.key] || '#64748b'}` });
 
     const input = h('input', {
@@ -1067,9 +1092,9 @@
       stepBtn(1, '▲'), stepBtn(-1, '▼'));
 
     weightInputsByKey[r.key] = input;
+    attachTooltip(icon, () => t('weightPillTitle', r.label, def));
 
     return h('span', {
-      title: t('weightPillTitle', r.label, def),
       style: 'display:flex;align-items:center;justify-content:center;gap:4px;'
         + 'background:#0f1b2e;border:1px solid #1e3a52;border-radius:999px;'
         + 'padding:2px 8px;box-sizing:border-box',
@@ -1090,36 +1115,42 @@
     feeDisplayEl = h('span', {
       style: `${FONT};font-weight:800;font-size:13px;color:${pct == null ? '#f87171' : '#f1f5f9'}`,
     }, feeDisplayText(pct));
-    return h('span', {
-      title: isAlliance ? t('feeToolTipAlliance') : t('feeTooltip'),
-      style: 'display:flex;align-items:center;gap:4px;background:#0f1b2e;'
+    const feeWrap = h('span', {
+      style: 'display:flex;align-items:center;gap:4px;background:#0f1b2e;cursor:help;'
         + 'border:1px solid #1e3a52;border-radius:999px;padding:3px 10px',
     },
       h('span', { style: `${FONT};color:#94a3b8;font-size:12px` }, t('feeLabel')),
       feeDisplayEl);
+    attachTooltip(feeWrap, () => (feeIsAlliance ? t('feeToolTipAlliance') : t('feeTooltip')));
+    return feeWrap;
   }
 
   function buildWeightsGrid(isAlliance) {
     weightInputsByKey = {};
+    const ratiosLabel = h('span', { style: 'display:flex;align-items:center;gap:6px;cursor:help' },
+      h('span', { style: 'font-size:16px;color:#38bdf8' }, '⚖'),
+      h('span', { style: `${FONT};color:#e2e8f0` }, t('ratios')));
+    attachTooltip(ratiosLabel, () => t('ratiosTooltip'));
+
+    const resetBtn = h('button', { type: 'button', onclick: () => {
+      resetAllOverridesNow();
+      refreshAfterWeightChange();
+    }, onmouseenter: (e) => { e.target.style.background = '#16324a'; },
+    onmouseleave: (e) => { e.target.style.background = '#0f1b2e'; },
+    style: `${FONT};color:#94a3b8;background:#0f1b2e;border:1px solid #1e3a52;`
+      + 'border-radius:999px;cursor:pointer;padding:5px 16px;font-size:13px;width:100%' },
+      t('resetRatios'));
+    attachTooltip(resetBtn, () => t('resetRatiosTooltip'));
+
     return h('div', { style: 'flex:none;width:290px' },
       h('div', { style: 'display:flex;align-items:center;justify-content:center;gap:6px;'
         + 'flex-wrap:wrap' },
-        h('span', { style: 'display:flex;align-items:center;gap:6px', title: t('ratiosTooltip') },
-          h('span', { style: 'font-size:16px;color:#38bdf8' }, '⚖'),
-          h('span', { style: `${FONT};color:#e2e8f0` }, t('ratios'))),
+        ratiosLabel,
         buildFeeControl(isAlliance)),
       h('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:6px' },
         ...RESOURCES.map((r) => buildWeightPill(r)),
         h('div', { style: 'grid-column:span 2;display:flex;align-items:center;'
-          + 'justify-content:center' },
-          h('button', { type: 'button', title: t('resetRatiosTooltip'), onclick: () => {
-            resetAllOverridesNow();
-            refreshAfterWeightChange();
-          }, onmouseenter: (e) => { e.target.style.background = '#16324a'; },
-          onmouseleave: (e) => { e.target.style.background = '#0f1b2e'; },
-          style: `${FONT};color:#94a3b8;background:#0f1b2e;border:1px solid #1e3a52;`
-            + 'border-radius:999px;cursor:pointer;padding:5px 16px;font-size:13px;width:100%' },
-            t('resetRatios')))));
+          + 'justify-content:center' }, resetBtn)));
   }
 
   // Keep the panel's own inputs in sync when weights/fee change from
@@ -1461,11 +1492,13 @@
         totalAvailableCapacity += available * capacity;
       }
 
-      // skip showing a per-row badge if you don't own enough of THIS ship
-      // type alone to cover the delivery — showing "186× needed" when you
-      // only have 50 would be misleading, since that ship type alone can't
-      // do it (the combined-capacity warning below covers this case instead)
-      if (available != null && available < shipsNeeded) return;
+      // NOTE: we no longer skip the badge just because you don't own
+      // enough of THIS one ship type alone — you might combine several
+      // eligible types (e.g. some Transport Shuttles + some Bulk
+      // Carriers) to cover the delivery together, so showing "110×
+      // needed" here is still useful even with only 50 owned. The
+      // combined-capacity "Not enough cargo space" warning below is what
+      // flags a delivery that's truly not achievable at all.
 
       // highlight the whole row with a blue outline — box-shadow instead
       // of border so it doesn't add to the row's box size and shift the
@@ -1478,7 +1511,7 @@
       const wrap = document.createElement('button');
       wrap.type = 'button';
       wrap.className = 'nxa-fleet-cargo-badge';
-      wrap.title = t('copyShipsNeeded');
+      attachHoverTooltip(wrap, () => t('copyShipsNeeded'));
       wrap.style.cssText = PILL
         + ';display:inline-flex;align-items:center;gap:5px;margin-right:10px;cursor:pointer;'
         + 'color:#38bdf8;background:transparent;border-color:#38bdf8;font-size:calc(1em + 2px)';
@@ -1518,10 +1551,11 @@
         const warn = document.createElement('span');
         warn.className = 'nxa-fleet-insufficient-badge';
         warn.textContent = t('notEnoughCargoSpace');
-        warn.title = t('notEnoughCargoSpaceTooltip', totalAvailableCapacity, needed);
         warn.style.cssText = PILL
           + ';display:inline-flex;align-items:center;margin-left:6px;vertical-align:middle;'
-          + 'color:#f87171;background:transparent;border-color:#f87171;font-size:calc(1em + 3px)';
+          + 'color:#f87171;background:transparent;border-color:#f87171;font-size:calc(1em + 3px);'
+          + 'cursor:help';
+        attachTooltip(warn, () => t('notEnoughCargoSpaceTooltip', totalAvailableCapacity, needed));
         info.appendChild(warn);
       }
     }
