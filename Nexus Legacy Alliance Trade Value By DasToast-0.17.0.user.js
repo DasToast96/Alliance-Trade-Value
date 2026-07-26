@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     3.0.0
+// @version     3.1.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -153,7 +153,7 @@
       give: 'Geben',
       askExactly: 'verlangen genau',
       orRounded: 'oder gerundet',
-      amountToGive: 'Menge zum Geben',
+      amountToGive: 'Menge geben',
       copyShipsNeeded: 'Diese Zahl kopieren, um sie ins Schiffsanzahl-Feld einzufügen '
         + '(nur Schiffstypen, die diese Ressource tatsächlich tragen können, zählen mit)',
       notEnoughCargoSpace: 'Nicht genug Frachtraum',
@@ -162,8 +162,8 @@
         + `gegen ${fmt(need)} benötigt. Manche Schiffe (z.B. Tanker, Ore Freighter) können nur `
         + 'bestimmte Ressourcen tragen und werden ausgeschlossen, wenn sie diese nicht tragen können.',
       copied: 'kopiert!',
-      amountToGet: 'Menge zum Erhalten',
-      roundedAmount: 'gerundeter Betrag',
+      amountToGet: 'Menge erhalten',
+      roundedAmount: 'gerundet',
       pickDifferent: 'zwei unterschiedliche Ressourcen wählen',
       noWeightRate: 'für eine davon ist kein Gewicht gesetzt — im Userscript-Menü prüfen',
       fairRate: (giveLabel, val, getLabel) => `fairer Kurs  1 ${giveLabel} = ${val} ${getLabel}`,
@@ -480,7 +480,9 @@
     styleEl.id = 'nxa-fillcalc-style';
     styleEl.textContent = '.nxa-fillcalc-btn{opacity:0;transition:opacity .12s}'
       + '.market-order-row:hover .nxa-fillcalc-btn,'
-      + '.market-trade-row:hover .nxa-fillcalc-btn{opacity:1}';
+      + '.market-trade-row:hover .nxa-fillcalc-btn{opacity:1}'
+      + '.nxa-ask-output::placeholder{color:#4ade80;opacity:1}'
+      + '.nxa-ask-rounded::placeholder{color:#facc15;opacity:1}';
     document.head.appendChild(styleEl);
   }
 
@@ -972,7 +974,7 @@
     + 'border-radius:5px;padding:2px 6px';
 
   function resSelect(value, onchange) {
-    const sel = h('select', { style: `${FIELD};min-width:140px;padding:4px 10px`, onchange });
+    const sel = h('select', { style: `${FIELD};min-width:118px;padding:4px 8px`, onchange });
     for (const r of RESOURCES) {
       const opt = h('option', { value: r.key }, r.label);
       if (r.key === value) opt.selected = true;
@@ -1030,17 +1032,17 @@
     const giveSteppers = h('span', { style: 'display:flex;flex-direction:column;gap:1px' },
       giveStepBtn(1, '▲'), giveStepBtn(-1, '▼'));
     const giveAmountWrap = h('span', { style: `${FIELD_NUM};display:flex;align-items:center;`
-      + 'justify-content:space-between;gap:4px;padding:2px 4px 2px 6px;width:150px' },
+      + 'justify-content:space-between;gap:4px;padding:2px 4px 2px 6px;width:130px' },
       giveAmount, giveSteppers);
-    const getOutput = h('input', { type: 'text', readonly: 'true',
-      placeholder: t('amountToGet'), style: `${FIELD_NUM};width:150px;color:#4ade80` });
+    const getOutput = h('input', { type: 'text', readonly: 'true', class: 'nxa-ask-output',
+      placeholder: t('amountToGet'), style: `${FIELD_NUM};width:130px;color:#4ade80` });
 
     // Second column: a read-only "clean" version of the ask amount, rounded
     // to 3 significant figures (13333 -> 13300) purely so you have a
     // round, easy-to-read number on hand if you'd rather use that instead
     // of the exact one in getOutput. It never overwrites getOutput.
-    const getOutputClean = h('input', { type: 'text', readonly: 'true',
-      placeholder: t('roundedAmount'), style: `${FIELD_NUM};width:150px;color:#facc15` });
+    const getOutputClean = h('input', { type: 'text', readonly: 'true', class: 'nxa-ask-rounded',
+      placeholder: t('roundedAmount'), style: `${FIELD_NUM};width:130px;color:#facc15` });
 
     // ±delta badge for the rounded number, same look as the value pill on
     // real order rows. The tooltip carries the precise fair amount and the
@@ -1253,7 +1255,7 @@
     // "Give" section is its own single-line flex row (centered against
     // ONLY its own height) — kept separate from the ask section below so
     // it never gets stretched/offset by the taller 2-row ask block.
-    const giveRow = h('div', { style: 'display:flex;gap:8px;align-items:center' },
+    const giveRow = h('div', { style: 'display:flex;gap:6px;align-items:center' },
       h('span', { style: `${FONT};color:#94a3b8` }, t('give')),
       giveAmountWrap, giveSel, swapBtn);
 
@@ -1262,7 +1264,7 @@
     // tracks with giveRow, so row 2 ("or rounded") doesn't inherit a
     // huge empty gap from Give's wide amount/resource columns.
     const askGrid = h('div', { style: 'display:grid;grid-template-columns:auto auto auto;'
-      + 'column-gap:8px;row-gap:2px;align-items:center' },
+      + 'column-gap:6px;row-gap:2px;align-items:center' },
       g(h('span', { style: `${FONT};color:#94a3b8` }, t('askExactly')), 1, 1),
       g(getOutput, 1, 2), g(getSel, 1, 3),
       g(h('span', { style: `${FONT};color:#94a3b8` }, t('orRounded')), 2, 1),
@@ -1273,7 +1275,7 @@
         h('div', { style: `${FONT};color:#e2e8f0` }, t('calcTitle')),
         settingsBtn),
       settingsPanel,
-      h('div', { style: 'display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-top:6px' },
+      h('div', { style: 'display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-top:6px' },
         giveRow, askGrid),
       h('div', { style: 'margin-top:0;display:flex;flex-direction:column;gap:2px' },
         rateNoFeeEl, rateWithFeeEl),
