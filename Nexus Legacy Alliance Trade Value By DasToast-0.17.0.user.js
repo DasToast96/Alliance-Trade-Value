@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     1.42.0
+// @version     2.0.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -49,30 +49,21 @@
 
   const norm = (name) => (name || '').toLowerCase().replace(/[^a-z]/g, '');
 
-  // ---- language detection ----
-  // The page has an EN/DE language switcher (button.lang-btn, aria-label
-  // "English"/"Deutsch"). We read whichever button is marked active/current,
-  // fall back to <html lang="">, then to the browser's own language.
-  function computeLang() {
+  // ---- language (explicit user setting, persisted) ----
+  // Default English; the user can switch to German via the settings gear
+  // in the calculator, and the choice is remembered across sessions.
+  const LANG_KEY = 'nexusLang';
+  function getStoredLang() {
     try {
-      const activeBtn = document.querySelector(
-        '.lang-btn.active, .lang-btn.is-active, .lang-btn[aria-pressed="true"], '
-        + '.lang-btn.selected, .lang-btn.current, .lang-btn[aria-current="true"]');
-      if (activeBtn) {
-        const label = (activeBtn.getAttribute('aria-label') || activeBtn.textContent || '').trim().toLowerCase();
-        if (label === 'deutsch' || label === 'german' || label === 'de') return 'de';
-        if (label === 'english' || label === 'en') return 'en';
-      }
-    } catch (e) { /* ignore */ }
-    try {
-      const htmlLang = (document.documentElement.getAttribute('lang') || '').toLowerCase();
-      if (htmlLang.startsWith('de')) return 'de';
-      if (htmlLang.startsWith('en')) return 'en';
-    } catch (e) { /* ignore */ }
-    return (navigator.language || '').toLowerCase().startsWith('de') ? 'de' : 'en';
+      const v = GM_getValue(LANG_KEY, '');
+      return (v === 'de' || v === 'en') ? v : null;
+    } catch (e) { return null; }
+  }
+  function setStoredLang(lang) {
+    try { GM_setValue(LANG_KEY, lang); } catch (e) { /* ignore */ }
   }
 
-  let LANG = computeLang();
+  let LANG = getStoredLang() || 'en';
 
   const RESOURCE_LABELS = {
     en: {
@@ -92,6 +83,7 @@
       calcTitle: 'Fair Trade Calculator',
       give: 'Give',
       askExactly: 'ask for exactly',
+      orRounded: 'or rounded',
       amountToGive: 'amount to give',
       copyShipsNeeded: 'Copy this number to paste into the ship count field '
         + '(only ship types that can actually carry this resource are counted)',
@@ -102,9 +94,13 @@
         + 'specific resources and are excluded when they can\'t carry this one.',
       copied: 'copied!',
       amountToGet: 'amount to get',
+      roundedAmount: 'rounded amount',
       pickDifferent: 'pick two different resources',
       noWeightRate: 'no weight set for one of these — check the userscript menu',
       fairRate: (giveLabel, val, getLabel) => `fair rate  1 ${giveLabel} = ${val} ${getLabel}`,
+      askRoundedTooltip: (exactAsk, roundedAsk, getLabel, delta, equivGet) =>
+        `rounded ${exactAsk.toFixed(2)} ${getLabel} (exact fair amount) to ${roundedAsk.toLocaleString()} ${getLabel}\n`
+        + `${delta >= 0 ? 'profit' : 'loss'} from rounding: ${delta >= 0 ? '+' : ''}${delta.toFixed(2)} value`,
       justCalculating: "Calculator won't automate anything.",
       feeUpdateHint: 'To update your fee cost, open Hub Inventory after research.',
       swapTooltip: 'Swap Give and Ask For',
@@ -112,9 +108,21 @@
       ratiosTooltip: 'These are the default ratios used to value trades. Type a number to override.',
       resetRatios: 'Reset Ratios',
       resetRatiosTooltip: 'Reset all resource ratios back to their defaults (does not affect the fee).',
+      settingsTooltip: 'Calculator settings',
+      autoFillToggleLabel: 'Enable auto-fill buttons (experimental)',
+      autoFillWarning: 'This only fills a quantity field (ship count, or the Create Order '
+        + 'amounts) for your review — it never sends the fleet or submits the order itself. '
+        + 'Still, if the third-party tool policy changes, this specific feature could become '
+        + 'disallowed — you use it at your own risk.',
+      autoFillButton: (count, shipName) => `Auto-fill ${count}× ${shipName}`,
+      fillCalcTooltip: 'Load this trade into the Fair Trade Calculator',
+      fillOrderFormButtonExact: 'Fill exact',
+      fillOrderFormButtonRounded: 'Fill rounded',
+      languageLabel: 'Language',
       weightPillTitle: (label, def) => `${label} — blank use the default (${def})`,
       noWeightPillTitle: (missing) => `No weight set for "${missing}" — add it via the userscript menu.`,
       youWereBuyer: 'You were the buyer on this trade.',
+      youWereSeller: 'You were the seller (order creator) on this trade.',
       buyerTitle: (delta, equivGet, getResource) =>
         `buyer ${delta >= 0 ? 'profit' : 'loss'} ${delta >= 0 ? '+' : ''}${fmt(delta)} value\n`
         + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGet).toLocaleString()} ${getResource} `
@@ -144,6 +152,7 @@
       calcTitle: 'Fairer-Handel-Rechner',
       give: 'Geben',
       askExactly: 'verlangen genau',
+      orRounded: 'oder gerundet',
       amountToGive: 'Menge zum Geben',
       copyShipsNeeded: 'Diese Zahl kopieren, um sie ins Schiffsanzahl-Feld einzufügen '
         + '(nur Schiffstypen, die diese Ressource tatsächlich tragen können, zählen mit)',
@@ -154,9 +163,13 @@
         + 'bestimmte Ressourcen tragen und werden ausgeschlossen, wenn sie diese nicht tragen können.',
       copied: 'kopiert!',
       amountToGet: 'Menge zum Erhalten',
+      roundedAmount: 'gerundeter Betrag',
       pickDifferent: 'zwei unterschiedliche Ressourcen wählen',
       noWeightRate: 'für eine davon ist kein Gewicht gesetzt — im Userscript-Menü prüfen',
       fairRate: (giveLabel, val, getLabel) => `fairer Kurs  1 ${giveLabel} = ${val} ${getLabel}`,
+      askRoundedTooltip: (exactAsk, roundedAsk, getLabel, delta, equivGet) =>
+        `${exactAsk.toFixed(2)} ${getLabel} (genauer fairer Betrag) gerundet auf ${roundedAsk.toLocaleString()} ${getLabel}\n`
+        + `${delta >= 0 ? 'Gewinn' : 'Verlust'} durch die Rundung: ${delta >= 0 ? '+' : ''}${delta.toFixed(2)} Wert`,
       justCalculating: 'Der Rechner automatisiert nichts.',
       feeUpdateHint: 'Um deine Gebühr zu aktualisieren, öffne nach der Forschung Hub Inventory.',
       swapTooltip: 'Geben und Verlangen tauschen',
@@ -164,9 +177,21 @@
       ratiosTooltip: 'Das sind die Standard-Verhältnisse zur Bewertung von Trades. Zahl eingeben zum Überschreiben.',
       resetRatios: 'Ratios zurücksetzen',
       resetRatiosTooltip: 'Alle Ressourcen-Verhältnisse auf den Standard zurücksetzen (betrifft nicht die Gebühr).',
+      settingsTooltip: 'Rechner-Einstellungen',
+      autoFillToggleLabel: 'Auto-Fill-Buttons aktivieren (experimentell)',
+      autoFillWarning: 'Füllt nur ein Mengenfeld (Schiffsanzahl oder die Create-Order-Werte) '
+        + 'zur Kontrolle aus — schickt die Flotte nie los und sendet die Order nie selbst ab. '
+        + 'Sollte sich die Third-Party-Tool-Police ändern, könnte genau dieses Feature künftig '
+        + 'nicht mehr erlaubt sein — Nutzung auf eigenes Risiko.',
+      autoFillButton: (count, shipName) => `${count}× ${shipName} automatisch eintragen`,
+      fillCalcTooltip: 'Diesen Trade in den Fair Trade Calculator laden',
+      fillOrderFormButtonExact: 'Exakt übernehmen',
+      fillOrderFormButtonRounded: 'Gerundet übernehmen',
+      languageLabel: 'Sprache',
       weightPillTitle: (label, def) => `${label} — leer lassen für den Standardwert (${def})`,
       noWeightPillTitle: (missing) => `Kein Gewicht für "${missing}" gesetzt — über das Userscript-Menü hinzufügen.`,
       youWereBuyer: 'Du warst der Käufer in diesem Trade.',
+      youWereSeller: 'Du warst der Verkäufer (Ersteller der Order) in diesem Trade.',
       buyerTitle: (delta, equivGet, getResource) =>
         `Käufer-${delta >= 0 ? 'Gewinn' : 'Verlust'} ${delta >= 0 ? '+' : ''}${fmt(delta)} Wert\n`
         + `≈ ${delta >= 0 ? '+' : ''}${Math.round(equivGet).toLocaleString()} ${getResource} `
@@ -279,6 +304,25 @@
   // effective weights = defaults with overrides layered on top
   function weights() {
     return { ...DEFAULT_WEIGHTS, ...overrides() };
+  }
+
+  // ---- optional auto-fill button (opt-in, default OFF) ----
+  // Writes a computed ship count into the game's own quantity field for
+  // manual review — never clicks Send Fleet itself. Off by default since
+  // it's the most policy-sensitive feature in this script; the settings
+  // gear in the calculator lets the user turn it on/off explicitly.
+  const AUTOFILL_KEY = 'nexusAutoFillEnabled';
+  let cachedAutoFillEnabled = null;
+  function isAutoFillEnabled() {
+    if (cachedAutoFillEnabled === null) {
+      try { cachedAutoFillEnabled = GM_getValue(AUTOFILL_KEY, false) === true; }
+      catch (e) { cachedAutoFillEnabled = false; }
+    }
+    return cachedAutoFillEnabled;
+  }
+  function setAutoFillEnabled(val) {
+    cachedAutoFillEnabled = !!val;
+    try { GM_setValue(AUTOFILL_KEY, !!val); } catch (e) { /* ignore */ }
   }
 
   // ---- market fee (Browse/Create Order only — Alliance Trade is 0%) ----
@@ -398,6 +442,17 @@
     return String(Math.round(n));
   };
 
+  // Rounds to `sig` significant figures (e.g. 13333.33 -> 13300 at 3 sig
+  // figs). Scales automatically with magnitude, which fits trades ranging
+  // from ~1k up to ~1M without a hardcoded step size: 1,000 stays exact,
+  // 13,333 -> 13,300, 133,333 -> 133,000, 1,000,000 stays exact.
+  function roundToSigFigs(num, sig) {
+    if (!(num > 0)) return 0;
+    const magnitudeExp = sig - Math.ceil(Math.log10(num));
+    const magnitude = Math.pow(10, magnitudeExp);
+    return Math.round(num * magnitude) / magnitude;
+  }
+
   // green→amber→red bands by value ratio (get / give)
   function colorFor(ratio) {
     if (ratio >= 1.05) return '#4ade80';
@@ -416,6 +471,18 @@
   //  alongside the native `title` attribute (kept as a fallback/
   //  accessibility aid) because native tooltips are unreliable in Firefox.
   // ====================================================================
+
+  // one-time stylesheet: the "load into calculator" button only appears
+  // while hovering its own order row — plain CSS :hover, so it works the
+  // same in every browser without any JS mouseenter/mouseleave wiring.
+  if (!document.getElementById('nxa-fillcalc-style')) {
+    const styleEl = document.createElement('style');
+    styleEl.id = 'nxa-fillcalc-style';
+    styleEl.textContent = '.nxa-fillcalc-btn{opacity:0;transition:opacity .12s}'
+      + '.market-order-row:hover .nxa-fillcalc-btn,'
+      + '.market-trade-row:hover .nxa-fillcalc-btn{opacity:1}';
+    document.head.appendChild(styleEl);
+  }
 
   let sharedTooltipEl = null;
   function getSharedTooltip() {
@@ -545,7 +612,7 @@
     // element constantly, which raced with clicks and made the pinned
     // tooltip immediately lose its target.
     const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|`
-      + `${JSON.stringify(w)}|${rowFeePct}|${inBrowse}`;
+      + `${JSON.stringify(w)}|${rowFeePct}|${inBrowse}|${LANG}`;
     if (row.dataset.nxaValueSig === signature) return;
     row.dataset.nxaValueSig = signature;
 
@@ -599,6 +666,20 @@
       attachTooltip(pctPill, () => title);
 
       wrap.append(ratioPill, pctPill);
+
+      const fillBtn = document.createElement('button');
+      fillBtn.type = 'button';
+      fillBtn.className = 'nxa-fillcalc-btn';
+      fillBtn.textContent = '🧮';
+      fillBtn.style.cssText = PILL
+        + ';color:#38bdf8;background:transparent;border-color:#38bdf8;cursor:pointer;'
+        + 'padding:0 6px;line-height:1.6';
+      attachHoverTooltip(fillBtn, () => t('fillCalcTooltip'));
+      fillBtn.onclick = (e) => {
+        e.stopPropagation();
+        fillCalculatorFromTrade(norm(give.resource), give.amount, norm(get.resource));
+      };
+      wrap.appendChild(fillBtn);
     }
 
     // mount right after the game's own rate "(1:1.81)"
@@ -654,7 +735,7 @@
     // History rows never change once written — this signature check makes
     // almost every later rebuild call a no-op, so a pinned tooltip's
     // element never gets swapped out from under a click.
-    const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|${JSON.stringify(w)}`;
+    const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|${JSON.stringify(w)}|${LANG}`;
     if (row.dataset.nxaHistSig === signature) return;
     row.dataset.nxaHistSig = signature;
     row.querySelectorAll('.nxa-history-badge, .nxa-you-marker').forEach((b) => b.remove());
@@ -689,23 +770,43 @@
 
     wrap.append(ratioPill, pctPill);
 
+    const fillBtn = document.createElement('button');
+    fillBtn.type = 'button';
+    fillBtn.className = 'nxa-fillcalc-btn';
+    fillBtn.textContent = '🧮';
+    fillBtn.style.cssText = PILL
+      + ';color:#38bdf8;background:transparent;border-color:#38bdf8;cursor:pointer;'
+      + 'padding:0 6px;line-height:1.6';
+    attachHoverTooltip(fillBtn, () => t('fillCalcTooltip'));
+    fillBtn.onclick = (e) => {
+      e.stopPropagation();
+      fillCalculatorFromTrade(norm(give.resource), give.amount, norm(get.resource));
+    };
+    wrap.appendChild(fillBtn);
+
     // mount right after the "get" amount, before the "by X → Y" text
     const getWrapper = amounts[1].parentNode;
     getWrapper.parentNode.insertBefore(wrap, getWrapper.nextSibling);
 
-    // "you bought this" marker: the "by Seller → Buyer" text is the one
+    // "you were involved" marker: the "by Seller → Buyer" text is the one
     // direct-child span of the row that starts with "by " and has no class
     // of its own (unlike the direction pill and the date, which do). If it
-    // ends in "by you", you were the buyer on this historical trade.
+    // ends in "by you", you were the buyer (filler); if it starts with
+    // "by you", you were the seller (the order's original creator).
     const partySpan = Array.from(row.children)
       .find((el) => el.tagName === 'SPAN' && !el.className && /^by\s/i.test(el.textContent || ''));
-    if (partySpan && /by you\s*$/i.test(partySpan.textContent || '')) {
-      const marker = document.createElement('span');
-      marker.className = 'nxa-you-marker';
-      marker.textContent = ' 🙋';
-      marker.style.cssText = `${FONT};color:#4ade80;cursor:help`;
-      attachTooltip(marker, () => t('youWereBuyer'));
-      partySpan.appendChild(marker);
+    if (partySpan) {
+      const partyText = partySpan.textContent || '';
+      const wasBuyer = /by you\s*$/i.test(partyText);
+      const wasSeller = !wasBuyer && /^by you\b/i.test(partyText);
+      if (wasBuyer || wasSeller) {
+        const marker = document.createElement('span');
+        marker.className = 'nxa-you-marker';
+        marker.textContent = ' 🙋';
+        marker.style.cssText = `${FONT};color:#4ade80;cursor:help`;
+        attachTooltip(marker, () => t(wasBuyer ? 'youWereBuyer' : 'youWereSeller'));
+        partySpan.appendChild(marker);
+      }
     }
   }
 
@@ -763,7 +864,7 @@
     // constant for the life of the order — so this signature check makes
     // later rebuild calls a no-op even as the order's fill progress ticks
     // up, protecting a pinned tooltip's element from being swapped out.
-    const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|${JSON.stringify(w)}`;
+    const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|${JSON.stringify(w)}|${LANG}`;
     if (row.dataset.nxaMyOrderSig === signature) return;
     row.dataset.nxaMyOrderSig = signature;
     row.querySelectorAll('.nxa-myorder-badge').forEach((b) => b.remove());
@@ -819,6 +920,12 @@
     'cryoice', 'plasmacore', 'quantumdust', 'darkmatter', 'antimatter',
   ].map((key) => ({ key, label: RESOURCE_LABELS[LANG][key] }));
   const resLabel = (k) => (RESOURCES.find((r) => r.key === k) || {}).label || k;
+  // updates RESOURCES' .label fields in place after a language switch —
+  // the array/objects are mutated (not replaced), so anything holding a
+  // reference to an entry sees the new label immediately
+  function refreshResourceLabels() {
+    for (const r of RESOURCES) r.label = RESOURCE_LABELS[LANG][r.key];
+  }
 
   // Reuse the game's own resource icons wherever they already appear on the
   // page (e.g. the balance bar, order rows) instead of shipping our own
@@ -865,7 +972,7 @@
     + 'border-radius:5px;padding:2px 6px';
 
   function resSelect(value, onchange) {
-    const sel = h('select', { style: FIELD, onchange });
+    const sel = h('select', { style: `${FIELD};min-width:140px;padding:4px 10px`, onchange });
     for (const r of RESOURCES) {
       const opt = h('option', { value: r.key }, r.label);
       if (r.key === value) opt.selected = true;
@@ -880,13 +987,35 @@
   // small API exposed by buildCalcPanel() so the order-form sync below can
   // drive the calculator's OWN fields (never the game's own form fields)
   let calcApi = null;
+  // remembers the last trade loaded via a "load into calculator" button, so
+  // a freshly (re)mounted panel (e.g. after switching tabs) starts with it
+  // instead of resetting to the hardcoded Ore/Silicates default
+  let lastFillGiveKey = null;
+  let lastFillGiveAmount = null;
+  let lastFillGetKey = null;
+
+  function fillCalculatorFromTrade(giveResKey, giveAmt, getResKey) {
+    lastFillGiveKey = giveResKey;
+    lastFillGiveAmount = giveAmt;
+    lastFillGetKey = getResKey;
+    if (calcApi) {
+      calcApi.fillFromTrade(giveResKey, giveAmt, getResKey);
+      const panelEl = document.querySelector('.nxa-calc-panel');
+      if (panelEl) {
+        panelEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        panelEl.style.boxShadow = '0 0 0 2px #38bdf8';
+        setTimeout(() => { panelEl.style.boxShadow = ''; }, 1200);
+      }
+    }
+  }
 
   function buildCalcPanel(isAlliance) {
-    let giveKey = 'ore';
-    let getKey = 'silicates';
+    let giveKey = lastFillGiveKey || 'ore';
+    let getKey = lastFillGetKey || 'silicates';
 
     const giveAmount = h('input', { type: 'text', inputmode: 'decimal',
       placeholder: t('amountToGive'),
+      value: lastFillGiveAmount != null ? String(lastFillGiveAmount) : '',
       style: `${FONT_NUM};background:transparent;border:none;outline:none;`
         + 'width:100%;padding:0;color:#f1f5f9' });
     const giveStepBtn = (dir, label) => h('button', { type: 'button', tabIndex: '-1',
@@ -901,13 +1030,33 @@
     const giveSteppers = h('span', { style: 'display:flex;flex-direction:column;gap:1px' },
       giveStepBtn(1, '▲'), giveStepBtn(-1, '▼'));
     const giveAmountWrap = h('span', { style: `${FIELD_NUM};display:flex;align-items:center;`
-      + 'justify-content:space-between;gap:4px;padding:2px 4px 2px 6px;width:130px' },
+      + 'justify-content:space-between;gap:4px;padding:2px 4px 2px 6px;width:150px' },
       giveAmount, giveSteppers);
     const getOutput = h('input', { type: 'text', readonly: 'true',
       placeholder: t('amountToGet'), style: `${FIELD_NUM};width:150px;color:#4ade80` });
+
+    // Second column: a read-only "clean" version of the ask amount, rounded
+    // to 3 significant figures (13333 -> 13300) purely so you have a
+    // round, easy-to-read number on hand if you'd rather use that instead
+    // of the exact one in getOutput. It never overwrites getOutput.
+    const getOutputClean = h('input', { type: 'text', readonly: 'true',
+      placeholder: t('roundedAmount'), style: `${FIELD_NUM};width:150px;color:#facc15` });
+
+    // ±delta badge for the rounded number, same look as the value pill on
+    // real order rows. The tooltip carries the precise fair amount and the
+    // exact profit/loss this rounding implies.
+    let askBadgeTooltipText = '';
+    const askDeltaPill = h('span', {
+      style: `${PILL};cursor:help;display:none;background:transparent`,
+    });
+    attachTooltip(askDeltaPill, () => askBadgeTooltipText);
+    function clearAskBadge() {
+      askDeltaPill.style.display = 'none';
+    }
+
     const rateNote = h('div', { style: 'display:flex;flex-direction:column;gap:2px' },
-      h('span', { style: `${FONT};color:#64748b` }, ''),
-      h('span', { style: `${FONT};color:#38bdf8` }, ''));
+      h('span', { style: `${FONT};color:#64748b;line-height:1.2` }, ''),
+      h('span', { style: `${FONT};color:#38bdf8;line-height:1.2` }, ''));
     const [rateNoFeeEl, rateWithFeeEl] = rateNote.children;
     const warnNote = h('div', { style: 'display:flex;align-items:flex-start;gap:6px' },
       h('span', { style: `${FONT};color:#38bdf8;font-weight:900` }, '!'),
@@ -924,14 +1073,18 @@
 
       if (giveKey === getKey) {
         getOutput.value = '';
+        getOutputClean.value = '';
         rateNoFeeEl.textContent = t('pickDifferent');
         rateWithFeeEl.textContent = '';
+        clearAskBadge();
         return;
       }
       if (wGive == null || wGet == null) {
         getOutput.value = '';
+        getOutputClean.value = '';
         rateNoFeeEl.textContent = t('noWeightRate');
         rateWithFeeEl.textContent = '';
+        clearAskBadge();
         return;
       }
 
@@ -960,13 +1113,45 @@
       }
 
       const amt = Number(giveAmount.value);
-      if (!(amt > 0)) { getOutput.value = ''; return; }
-      const exact = amt * fair;
+      if (!(amt > 0)) {
+        getOutput.value = '';
+        getOutputClean.value = '';
+        getOutput.title = '';
+        clearAskBadge();
+        return;
+      }
+      const exact = amt * fair;  // precise ask amount for an exactly ×1.00 trade
       // strip trailing zeros (e.g. "0.500" -> "0.5", "22" stays "22") without
       // rounding — the point is the exact value, not a rounded-off one that
       // silently becomes "0" for small amounts.
       getOutput.value = String(Math.round(exact));
       getOutput.title = '';
+
+      // Clean, readable version (3 significant figures — scales with trade
+      // size across the ~1k-1M range) shown in the second column. Purely
+      // informational — never overwrites getOutput.
+      const askClean = Math.round(roundToSigFigs(exact, 3));
+      getOutputClean.value = askClean > 0 ? String(askClean) : '';
+
+      if (askClean > 0) {
+        // Deviation caused purely by ROUNDING exact -> askClean. `exact`
+        // already includes the fee compensation (if any), so comparing
+        // askClean against it isolates just the rounding effect instead
+        // of also picking up the fee markup as a fake "profit".
+        const equivGet = askClean - exact;  // resource units
+        const delta = equivGet * wGet;      // value units
+        const ratio = exact > 0 ? askClean / exact : 0;
+        const color = colorFor(ratio);
+
+        askDeltaPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
+        askDeltaPill.style.color = color;
+        askDeltaPill.style.borderColor = color;
+        askDeltaPill.style.display = 'inline-flex';
+
+        askBadgeTooltipText = t('askRoundedTooltip', exact, askClean, resLabel(getKey), delta, equivGet);
+      } else {
+        clearAskBadge();
+      }
     }
 
     const giveSel = resSelect(giveKey, () => { giveKey = giveSel.value; recalc(); });
@@ -974,51 +1159,125 @@
     giveAmount.oninput = recalc;
 
     calcRecalc = recalc;
-    // Sync API: only ever WRITES to this calculator's own giveSel/getSel/
-    // giveAmount — never touches the game's "I offer"/"I want" form. Used
-    // by wireOrderForm() below to mirror the resource + amount the user
-    // already picked in the order form, so they don't have to pick the
-    // same resource twice.
+    // Exposes calculator state to the outside world (the "load into
+    // calculator" 🧮 buttons write into it via fillFromTrade(), the "Fill
+    // Order Form" button reads it via getState()) — this calculator is
+    // otherwise fully independent, never overwritten by the game's own
+    // Create Order form.
     calcApi = {
-      setGive(key) {
-        if (!RESOURCES.some((r) => r.key === key) || key === giveKey) return;
-        giveKey = key; giveSel.value = key; recalc();
+      // Force-loads a specific trade's give/get resources + amount,
+      // regardless of current state — used by the "load into calculator"
+      // buttons on order rows.
+      fillFromTrade(newGiveKey, giveAmt, newGetKey) {
+        if (RESOURCES.some((r) => r.key === newGiveKey)) { giveKey = newGiveKey; giveSel.value = newGiveKey; }
+        if (RESOURCES.some((r) => r.key === newGetKey)) { getKey = newGetKey; getSel.value = newGetKey; }
+        if (giveAmt != null) giveAmount.value = String(giveAmt);
+        recalc();
       },
-      setGet(key) {
-        if (!RESOURCES.some((r) => r.key === key) || key === getKey) return;
-        getKey = key; getSel.value = key; recalc();
-      },
-      setGiveAmount(val) {
-        if (document.activeElement === giveAmount) return; // don't fight manual typing
-        if (giveAmount.value === String(val)) return;
-        giveAmount.value = val; recalc();
+      // Reads the calculator's current state — used by the "Fill Order
+      // Form" button to push these values into the game's own Create
+      // Order form.
+      getState() {
+        return {
+          giveKey, getKey,
+          giveAmount: giveAmount.value,
+          askAmount: getOutput.value,
+          askAmountClean: getOutputClean.value,
+        };
       },
     };
     recalc();
 
+    const settingsPanel = h('div', { style: 'display:none;flex-direction:column;gap:6px;'
+      + 'margin-top:8px;padding:8px 10px;background:#0f1b2e;border:1px solid #1e3a52;'
+      + 'border-radius:8px' });
+    const autoFillCheckbox = h('input', { type: 'checkbox' });
+    autoFillCheckbox.checked = isAutoFillEnabled();
+    autoFillCheckbox.onchange = () => {
+      setAutoFillEnabled(autoFillCheckbox.checked);
+      annotateFleetCargo();
+      mountOrderFormFillButton();
+    };
+
+    const langBtn = (code, label) => {
+      const btn = h('button', { type: 'button', onclick: () => {
+        if (LANG === code) return;
+        setStoredLang(code);
+        LANG = code;
+        refreshResourceLabels();
+        document.querySelectorAll('.nxa-calc-panel').forEach((p) => p.remove());
+        refreshAll();
+      }, style: `${FONT};font-size:12px;padding:3px 10px;border-radius:6px;cursor:pointer;`
+        + `border:1px solid ${LANG === code ? '#38bdf8' : '#1e3a52'};`
+        + `background:${LANG === code ? '#0f2437' : 'transparent'};`
+        + `color:${LANG === code ? '#38bdf8' : '#94a3b8'}` }, label);
+      return btn;
+    };
+    const langRow = h('div', { style: 'display:flex;align-items:center;gap:8px' },
+      h('span', { style: `${FONT};color:#94a3b8;font-size:12px` }, t('languageLabel')),
+      langBtn('en', 'English'), langBtn('de', 'Deutsch'));
+
+    settingsPanel.append(
+      h('label', { style: `${FONT};display:flex;align-items:center;gap:8px;cursor:pointer` },
+        autoFillCheckbox, t('autoFillToggleLabel')),
+      h('div', { style: 'display:flex;align-items:flex-start;gap:6px' },
+        h('span', { style: `${FONT};color:#38bdf8;font-weight:900` }, '!'),
+        h('span', { style: `${FONT};color:#64748b;font-size:12px` }, t('autoFillWarning'))),
+      h('div', { style: 'margin-top:2px;padding-top:6px;border-top:1px solid #1e3a52' }, langRow),
+    );
+
+    const settingsBtn = h('button', { type: 'button', onclick: () => {
+      settingsPanel.style.display = settingsPanel.style.display === 'none' ? 'flex' : 'none';
+    }, onmouseenter: (e) => { e.target.style.color = '#e2e8f0'; },
+    onmouseleave: (e) => { e.target.style.color = '#94a3b8'; },
+    style: `${FONT};color:#94a3b8;background:transparent;border:none;cursor:pointer;`
+      + 'padding:0;font-size:15px;line-height:1' }, '⚙');
+    attachHoverTooltip(settingsBtn, () => t('settingsTooltip'));
+
+    // Places `el` into a specific cell of its own small grid, without
+    // touching its existing width/color/etc. styling.
+    const g = (el, row, col) => { el.style.gridRow = String(row); el.style.gridColumn = String(col); return el; };
+
+    const swapBtn = h('button', { type: 'button', onclick: (e) => {
+      const tmpKey = giveKey; giveKey = getKey; getKey = tmpKey;
+      giveSel.value = giveKey; getSel.value = getKey;
+      if (getOutput.value !== '') giveAmount.value = getOutput.value;
+      recalc();
+    }, onmouseenter: (e) => { e.target.style.background = '#16324a'; },
+    onmouseleave: (e) => { e.target.style.background = '#0f2437'; },
+    style: `${FONT};color:#38bdf8;font-weight:800;background:#0f2437;`
+      + 'border:1px solid #1e3a52;border-radius:6px;cursor:pointer;'
+      + 'padding:2px 8px;line-height:1' }, '⇄');
+    attachTooltip(swapBtn, () => t('swapTooltip'));
+
+    // "Give" section is its own single-line flex row (centered against
+    // ONLY its own height) — kept separate from the ask section below so
+    // it never gets stretched/offset by the taller 2-row ask block.
+    const giveRow = h('div', { style: 'display:flex;gap:8px;align-items:center' },
+      h('span', { style: `${FONT};color:#94a3b8` }, t('give')),
+      giveAmountWrap, giveSel, swapBtn);
+
+    // Ask section is its own 2-row × 3-col mini-grid (label / amount /
+    // resource), sized only to its own content — NOT sharing column
+    // tracks with giveRow, so row 2 ("or rounded") doesn't inherit a
+    // huge empty gap from Give's wide amount/resource columns.
+    const askGrid = h('div', { style: 'display:grid;grid-template-columns:auto auto auto;'
+      + 'column-gap:8px;row-gap:2px;align-items:center' },
+      g(h('span', { style: `${FONT};color:#94a3b8` }, t('askExactly')), 1, 1),
+      g(getOutput, 1, 2), g(getSel, 1, 3),
+      g(h('span', { style: `${FONT};color:#94a3b8` }, t('orRounded')), 2, 1),
+      g(getOutputClean, 2, 2), g(askDeltaPill, 2, 3));
+
     const leftCol = h('div', { style: 'flex:1;min-width:260px' },
-      h('div', { style: `${FONT};color:#e2e8f0` }, t('calcTitle')),
-      h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' },
-        h('span', { style: `${FONT};color:#94a3b8` }, t('give')),
-        giveAmountWrap, giveSel,
-        (() => {
-          const swapBtn = h('button', { type: 'button', onclick: (e) => {
-            const tmpKey = giveKey; giveKey = getKey; getKey = tmpKey;
-            giveSel.value = giveKey; getSel.value = getKey;
-            if (getOutput.value !== '') giveAmount.value = getOutput.value;
-            recalc();
-          }, onmouseenter: (e) => { e.target.style.background = '#16324a'; },
-          onmouseleave: (e) => { e.target.style.background = '#0f2437'; },
-          style: `${FONT};color:#38bdf8;font-weight:800;background:#0f2437;`
-            + 'border:1px solid #1e3a52;border-radius:6px;cursor:pointer;'
-            + 'padding:2px 8px;line-height:1' }, '⇄');
-          attachTooltip(swapBtn, () => t('swapTooltip'));
-          return swapBtn;
-        })(),
-        h('span', { style: `${FONT};color:#94a3b8` }, t('askExactly')),
-        getOutput, getSel),
-      h('div', { style: 'margin-top:6px' }, rateNote),
-      h('div', { style: 'margin-top:15px;padding-top:8px;border-top:1px solid #1e3a52;'
+      h('div', { style: 'display:flex;align-items:center;gap:8px' },
+        h('div', { style: `${FONT};color:#e2e8f0` }, t('calcTitle')),
+        settingsBtn),
+      settingsPanel,
+      h('div', { style: 'display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-top:6px' },
+        giveRow, askGrid),
+      h('div', { style: 'margin-top:0;display:flex;flex-direction:column;gap:2px' },
+        rateNoFeeEl, rateWithFeeEl),
+      h('div', { style: 'margin-top:10px;padding-top:6px;border-top:1px solid #1e3a52;'
         + 'display:flex;flex-direction:column;gap:5px' },
         warnNote, feeUpdateHint));
 
@@ -1062,7 +1321,6 @@
       style: `${FONT};background:transparent;border:none;outline:none;width:34px;`
         + `padding:0;color:${cur != null ? '#f1f5f9' : '#64748b'};font-weight:800;`
         + 'font-size:14px;line-height:1.2',
-      title: t('weightPillTitle', r.label, def),
     });
 
     function updateColor() {
@@ -1093,6 +1351,7 @@
 
     weightInputsByKey[r.key] = input;
     attachTooltip(icon, () => t('weightPillTitle', r.label, def));
+    attachHoverTooltip(input, () => t('weightPillTitle', r.label, def));
 
     return h('span', {
       style: 'display:flex;align-items:center;justify-content:center;gap:4px;'
@@ -1143,7 +1402,7 @@
     attachTooltip(resetBtn, () => t('resetRatiosTooltip'));
 
     return h('div', { style: 'flex:none;width:290px' },
-      h('div', { style: 'display:flex;align-items:center;justify-content:center;gap:6px;'
+      h('div', { style: 'display:flex;align-items:flex-start;justify-content:center;gap:6px;'
         + 'flex-wrap:wrap' },
         ratiosLabel,
         buildFeeControl(isAlliance)),
@@ -1243,20 +1502,13 @@
   }
 
   // ====================================================================
-  //  Order-form read-only sync
-  //  When the "New Order" form is open, it has its own "I offer" resource
-  //  + amount and "I want" resource fields. Instead of making the user pick
-  //  the same two resources again up in the calculator, we mirror the
-  //  resource choices (and the "I offer" amount, since it's the same value
-  //  as "amount to give") into the calculator's OWN inputs.
-  //
-  //  This is strictly one-way and read-only from the game's perspective:
-  //  we only ever READ the "I offer"/"I want" selects and the "I offer"
-  //  amount input, and only ever WRITE into the calculator panel we built
-  //  ourselves. We never write into the game's own form fields (that would
-  //  cross the line into automating order creation, which this script does
-  //  not do) — the computed "amount to get" still has to be typed into
-  //  "I want" by hand.
+  //  "Fill Order Form" button
+  //  The calculator is fully independent — you set Give/Ask however you
+  //  like, it's never overwritten by whatever happens to already be in the
+  //  Create Order form. This button goes the OTHER direction: it pushes
+  //  the calculator's current values into the game's own "I offer"/"I
+  //  want" fields for you to review and submit yourself. It only ever
+  //  fills those two fields — it never touches or clicks "Post Order".
   // ====================================================================
 
   function keyFromSelect(sel) {
@@ -1282,51 +1534,77 @@
     return null;
   }
 
-  function wireOrderForm() {
-    if (!calcApi) return;
+  // finds the <option> whose value corresponds to our internal resource
+  // key — the reverse of keyFromSelect()'s norm()-based matching
+  function optionValueForKey(sel, key) {
+    const opt = Array.from(sel.options).find((o) => norm(o.value) === key);
+    return opt ? opt.value : null;
+  }
+
+  function mountOrderFormFillButton() {
+    if (!calcApi || !isAutoFillEnabled()) {
+      document.querySelectorAll('.nxa-orderform-fill-btn').forEach((b) => b.remove());
+      return;
+    }
     // search the whole document rather than a specific tab wrapper — the
     // same form.market-create-form component is reused by both the
     // Alliance Trade "New Order" form and the regular Create Order tab.
-    const offerRow = findFormRow(document, 'I offer');
-    if (offerRow) {
-      const sel = offerRow.querySelector('select');
-      const amountInput = offerRow.querySelector('input[type="number"]');
-      if (sel) {
-        const key = keyFromSelect(sel);
-        if (key) calcApi.setGive(key);
-        if (!sel.dataset.nxaWired) {
-          sel.dataset.nxaWired = '1';
-          sel.addEventListener('change', () => {
-            const k = keyFromSelect(sel);
-            if (k) calcApi.setGive(k);
-          });
-        }
+    const form = document.querySelector('form.market-create-form');
+    if (!form) {
+      document.querySelectorAll('.nxa-orderform-fill-btn').forEach((b) => b.remove());
+      return;
+    }
+    // Already mounted for this exact (still-live) form — leave it alone.
+    // refreshAll() runs on ~every unrelated game DOM update, and rebuilding
+    // the buttons every time could remove the very node the user is mid-
+    // click on, which is why they sometimes didn't react before.
+    if (form.querySelector('.nxa-orderform-fill-btn')) return;
+    // form was replaced (e.g. tab switch) — drop any leftover buttons from
+    // the old, now-detached form before mounting fresh ones.
+    document.querySelectorAll('.nxa-orderform-fill-btn').forEach((b) => b.remove());
+
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const offerRow = findFormRow(form, 'I offer');
+    const wantRow = findFormRow(form, 'I want');
+    if (!submitBtn || !offerRow || !wantRow) return;
+
+    // Shared fill logic — only the ask amount source differs between the
+    // two buttons (exact vs rounded-to-clean-number).
+    function fill(askAmountField) {
+      const state = calcApi.getState();
+      const offerSel = offerRow.querySelector('select');
+      const offerAmt = offerRow.querySelector('input[type="number"]');
+      const wantSel = wantRow.querySelector('select');
+      const wantAmt = wantRow.querySelector('input[type="number"]');
+      if (offerSel) {
+        const val = optionValueForKey(offerSel, state.giveKey);
+        if (val != null) fillNativeInput(offerSel, val);
       }
-      if (amountInput && !amountInput.dataset.nxaWired) {
-        amountInput.dataset.nxaWired = '1';
-        amountInput.addEventListener('input', () => {
-          if (amountInput.value !== '') calcApi.setGiveAmount(amountInput.value);
-        });
+      if (offerAmt && state.giveAmount !== '') fillNativeInput(offerAmt, state.giveAmount);
+      if (wantSel) {
+        const val = optionValueForKey(wantSel, state.getKey);
+        if (val != null) fillNativeInput(wantSel, val);
       }
+      if (wantAmt && state[askAmountField] !== '') fillNativeInput(wantAmt, state[askAmountField]);
     }
 
-    const wantRow = findFormRow(document, 'I want');
-    if (wantRow) {
-      const sel = wantRow.querySelector('select');
-      if (sel) {
-        const key = keyFromSelect(sel);
-        if (key) calcApi.setGet(key);
-        if (!sel.dataset.nxaWired) {
-          sel.dataset.nxaWired = '1';
-          sel.addEventListener('change', () => {
-            const k = keyFromSelect(sel);
-            if (k) calcApi.setGet(k);
-          });
-        }
-      }
-      // "I want" Amount input is intentionally never touched — the user
-      // types the calculator's result into it by hand.
+    function fillBtn(label, askAmountField) {
+      const btn = h('button', { type: 'button', class: 'nxa-orderform-fill-btn',
+        onclick: () => fill(askAmountField),
+        onmouseenter: (e) => { e.target.style.background = '#16324a'; },
+        onmouseleave: (e) => { e.target.style.background = '#0f2437'; },
+        style: `${FONT};color:#38bdf8;background:#0f2437;border:1px solid #1e3a52;`
+          + 'border-radius:6px;cursor:pointer;padding:8px 12px;flex:1' },
+        label);
+      return btn;
     }
+
+    const wrap = h('div', { class: 'nxa-orderform-fill-btn',
+      style: 'display:flex;gap:8px;margin-bottom:8px' },
+      fillBtn(t('fillOrderFormButtonExact'), 'askAmount'),
+      fillBtn(t('fillOrderFormButtonRounded'), 'askAmountClean'));
+
+    submitBtn.parentNode.insertBefore(wrap, submitBtn);
   }
 
   // ====================================================================
@@ -1368,6 +1646,35 @@
     // don't wait on the promise — run the reliable fallback right away too;
     // whichever finishes first, the clipboard ends up with the right text
     fallback();
+  }
+
+  // React (and similar frameworks) override the input element's own
+  // `value` setter to track changes internally; setting `input.value = x`
+  // directly calls that OVERRIDDEN setter, which React's own change
+  // detection doesn't register as a real change, so a plain dispatched
+  // 'input' event does nothing. Calling the ORIGINAL native setter first
+  // (bypassing React's override) makes React's internal tracker see the
+  // value as changed, so the subsequent 'input' event correctly fires
+  // onChange, exactly as if the player had typed it themselves.
+  //
+  // This only ever runs from a direct button click the player makes — it
+  // fills one quantity field, nothing else. It never touches Send Fleet or
+  // any other submit control, and never runs on its own.
+  function fillNativeInput(input, value) {
+    if (!input) return false;
+    try {
+      const proto = Object.getPrototypeOf(input);
+      const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')
+        && Object.getOwnPropertyDescriptor(proto, 'value').set;
+      if (nativeSetter) {
+        nativeSetter.call(input, String(value));
+      } else {
+        input.value = String(value); // fallback for a non-standard input element
+      }
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    } catch (e) { return false; }
   }
 
   const CARGO_SHIP_NAMES = new Set([
@@ -1422,6 +1729,7 @@
       // panel closed — clean up any leftovers just in case
       document.querySelectorAll('.nxa-fleet-cargo-badge').forEach((b) => b.remove());
       document.querySelectorAll('.nxa-fleet-insufficient-badge').forEach((b) => b.remove());
+      document.querySelectorAll('.nxa-autofill-btn').forEach((b) => b.remove());
       document.querySelectorAll('.fill-ship-row').forEach((row) => {
         row.style.removeProperty('box-shadow');
         row.style.removeProperty('border-radius');
@@ -1453,6 +1761,7 @@
 
     document.querySelectorAll('.nxa-fleet-cargo-badge').forEach((b) => b.remove());
     document.querySelectorAll('.nxa-fleet-insufficient-badge').forEach((b) => b.remove());
+    document.querySelectorAll('.nxa-autofill-btn').forEach((b) => b.remove());
     document.querySelectorAll('.fill-ship-row').forEach((row) => {
       row.style.removeProperty('box-shadow');
       row.style.removeProperty('border-radius');
@@ -1460,6 +1769,7 @@
 
     let totalAvailableCapacity = 0;
     let sawAnyCargoShipRow = false;
+    const eligibleRows = [];
 
     panel.querySelectorAll('.fill-ship-row').forEach((row) => {
       const nameEl = row.querySelector('.fill-ship-name');
@@ -1484,22 +1794,29 @@
       const availMatch = availEl && availEl.textContent.match(/(\d+)/);
       const available = availMatch ? parseInt(availMatch[1], 10) : null;
 
-      // tally combined capacity across BOTH cargo ship types, regardless
-      // of whether this specific type alone is enough — used below to
-      // check if you have enough cargo space at all, even split across types
+      // tally combined capacity across ALL eligible cargo ship types,
+      // regardless of what we end up displaying — used below to check if
+      // you have enough cargo space at all, even split across types
       if (available != null) {
         sawAnyCargoShipRow = true;
         totalAvailableCapacity += available * capacity;
       }
 
-      // NOTE: we no longer skip the badge just because you don't own
-      // enough of THIS one ship type alone — you might combine several
-      // eligible types (e.g. some Transport Shuttles + some Bulk
-      // Carriers) to cover the delivery together, so showing "110×
-      // needed" here is still useful even with only 50 owned. The
-      // combined-capacity "Not enough cargo space" warning below is what
-      // flags a delivery that's truly not achievable at all.
+      eligibleRows.push({ row, name, statsEl, capacity, shipsNeeded, available });
+    });
 
+    // If a single ship type alone (the one with the LARGEST capacity that
+    // you own enough of) can cover the whole delivery, only highlight that
+    // one — showing several types at once when one would already do the
+    // job is just noise. Only fall back to showing every eligible type
+    // when no single type alone suffices, so the user can combine them.
+    const sufficientAlone = eligibleRows
+      .filter((r) => r.available != null && r.available >= r.shipsNeeded)
+      .sort((a, b) => b.capacity - a.capacity);
+    const rowsToShow = sufficientAlone.length ? [sufficientAlone[0]] : eligibleRows;
+    const singleSufficientRow = sufficientAlone.length ? sufficientAlone[0] : null;
+
+    rowsToShow.forEach(({ row, statsEl, shipsNeeded }) => {
       // highlight the whole row with a blue outline — box-shadow instead
       // of border so it doesn't add to the row's box size and shift the
       // surrounding layout
@@ -1539,6 +1856,33 @@
 
       statsEl.parentNode.insertBefore(wrap, statsEl);
     });
+
+    // Optional auto-fill button (off by default, toggled in the
+    // calculator's settings gear) — only offered when a single ship type
+    // alone covers the delivery, so it's a plain "fill this one field"
+    // action rather than a computed split across multiple ship types,
+    // which would edge toward automated decision-making. It only ever
+    // writes a quantity into the game's own input for manual review —
+    // Send Fleet is always still up to the user.
+    if (isAutoFillEnabled() && singleSufficientRow) {
+      const sendBtn = Array.from(panel.querySelectorAll('button'))
+        .find((b) => /send fleet/i.test(b.textContent || ''));
+      if (sendBtn && !panel.querySelector('.nxa-autofill-btn')) {
+        const qtyInput = singleSufficientRow.row.querySelector(
+          '.qty-control input[type="number"], .ship-quantity-stepper input[type="number"]',
+        );
+        if (qtyInput) {
+          const autoFillBtn = h('button', { type: 'button', class: 'nxa-autofill-btn',
+            onclick: () => {
+              fillNativeInput(qtyInput, singleSufficientRow.shipsNeeded);
+            },
+            style: `${FONT};color:#38bdf8;background:#0f2437;border:1px solid #1e3a52;`
+              + 'border-radius:6px;cursor:pointer;padding:6px 12px;width:100%;margin:6px 0' },
+            t('autoFillButton', singleSufficientRow.shipsNeeded, singleSufficientRow.name));
+          sendBtn.parentNode.insertBefore(autoFillBtn, sendBtn);
+        }
+      }
+    }
 
     // combined-capacity warning: even split across BOTH cargo ship types,
     // you don't own enough total cargo space to ever cover this delivery —
@@ -1585,6 +1929,9 @@
       if (TAB_NAMES.has(txt)) {
         const existing = document.querySelector('.nxa-calc-panel');
         if (existing) existing.remove();  // forces mountCalculator() to rebuild fresh
+        lastFillGiveKey = null;
+        lastFillGiveAmount = null;
+        lastFillGetKey = null;
         break;
       }
       el = el.parentElement;
@@ -1606,16 +1953,18 @@
       || n.classList?.contains('nxa-calc-panel') || n.classList?.contains('nxa-history-badge')
       || n.classList?.contains('nxa-you-marker') || n.classList?.contains('nxa-want-hint')
       || n.classList?.contains('nxa-fleet-cargo-badge') || n.classList?.contains('nxa-myorder-badge')
-      || n.classList?.contains('nxa-fleet-insufficient-badge')
+      || n.classList?.contains('nxa-fleet-insufficient-badge') || n.classList?.contains('nxa-autofill-btn')
+      || n.classList?.contains('nxa-orderform-fill-btn')
       || n.closest?.('.nxa-value-badge') || n.closest?.('.nxa-calc-panel')
       || n.closest?.('.nxa-history-badge') || n.closest?.('.nxa-you-marker')
       || n.closest?.('.nxa-want-hint') || n.closest?.('.nxa-fleet-cargo-badge')
-      || n.closest?.('.nxa-myorder-badge') || n.closest?.('.nxa-fleet-insufficient-badge'));
+      || n.closest?.('.nxa-myorder-badge') || n.closest?.('.nxa-fleet-insufficient-badge')
+      || n.closest?.('.nxa-autofill-btn') || n.closest?.('.nxa-orderform-fill-btn'));
   }
 
   function refreshAll() {
     annotateAll(); annotateHistory(); annotateMyOrders();
-    mountCalculator(); wireOrderForm(); annotateFleetCargo();
+    mountCalculator(); mountOrderFormFillButton(); annotateFleetCargo();
     syncWeightsPanelInputs();
   }
 
