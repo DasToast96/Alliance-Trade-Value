@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     3.1.0
+// @version     3.9.3
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -480,7 +480,8 @@
     styleEl.id = 'nxa-fillcalc-style';
     styleEl.textContent = '.nxa-fillcalc-btn{opacity:0;transition:opacity .12s}'
       + '.market-order-row:hover .nxa-fillcalc-btn,'
-      + '.market-trade-row:hover .nxa-fillcalc-btn{opacity:1}'
+      + '.market-trade-row:hover .nxa-fillcalc-btn,'
+      + '.market-book-level:hover .nxa-fillcalc-btn{opacity:1}'
       + '.nxa-ask-output::placeholder{color:#4ade80;opacity:1}'
       + '.nxa-ask-rounded::placeholder{color:#facc15;opacity:1}';
     document.head.appendChild(styleEl);
@@ -588,7 +589,7 @@
     + 'font-family:inherit;font-weight:700;font-size:inherit;line-height:1.6;'
     + 'white-space:nowrap';
 
-  function annotateRow(row) {
+  function annotateRow(row, ratioW, deltaW) {
     // safety guard — this script only ever touches Alliance Trade rows and
     // the regular Market's Browse tab (both share the same row markup),
     // never anything else, even if annotateAll()'s own selector were
@@ -615,7 +616,17 @@
     // tooltip immediately lose its target.
     const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|`
       + `${JSON.stringify(w)}|${rowFeePct}|${inBrowse}|${LANG}`;
-    if (row.dataset.nxaValueSig === signature) return;
+    if (row.dataset.nxaValueSig === signature) {
+      const existing = row.querySelector('.nxa-value-badge');
+      if (existing) {
+        const [rp, dp] = existing.querySelectorAll('span');
+        if (rp && dp && ratioW != null && deltaW != null) {
+          rp.style.width = `${ratioW}px`;
+          dp.style.width = `${deltaW}px`;
+        }
+      }
+      return;
+    }
     row.dataset.nxaValueSig = signature;
 
     row.querySelectorAll('.nxa-value-badge').forEach((b) => b.remove());
@@ -652,19 +663,23 @@
       const title = t('buyerTitle', delta, equivGet, get.resource)
         + (feeUnknown ? t('feeErrorNote') : (inBrowse ? t('feeAppliedNote', rowFeePct) : ''));
 
-      // headline pills: ×ratio (solid) + profit/loss as % (outline). Absolute
-      // value and the resource-equivalent are still one click/hover away in
-      // the tooltip — they're different views of the same underlying number.
+      // headline pills: ×ratio (solid) + profit/loss as % (outline). Fixed,
+      // dynamically-computed width (see annotateAll) so every row's pill in
+      // this list is exactly as wide as the widest actual value — same
+      // mechanism as the Order Book badges, just sized from this list's own
+      // values instead of a shared hardcoded number.
       const ratioPill = document.createElement('span');
       ratioPill.textContent = `×${ratio.toFixed(2)}`;
       ratioPill.style.cssText = PILL
-        + `;color:#06121f;background:${color};border-color:${color};cursor:help`;
+        + `;font-size:14px;display:inline-block;width:${ratioW}px;text-align:center;`
+        + `color:#06121f;background:${color};border-color:${color};cursor:help`;
       attachTooltip(ratioPill, () => title);
 
       const pctPill = document.createElement('span');
       pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
       pctPill.style.cssText = PILL
-        + `;color:${color};background:transparent;border-color:${color};cursor:help`;
+        + `;font-size:14px;display:inline-block;width:${deltaW}px;text-align:center;`
+        + `color:${color};background:transparent;border-color:${color};cursor:help`;
       attachTooltip(pctPill, () => title);
 
       wrap.append(ratioPill, pctPill);
@@ -675,7 +690,7 @@
       fillBtn.textContent = '🧮';
       fillBtn.style.cssText = PILL
         + ';color:#38bdf8;background:transparent;border-color:#38bdf8;cursor:pointer;'
-        + 'padding:0 6px;line-height:1.6';
+        + 'padding:0 6px;line-height:1.6;margin-left:8px';
       attachHoverTooltip(fillBtn, () => t('fillCalcTooltip'));
       fillBtn.onclick = (e) => {
         e.stopPropagation();
@@ -684,19 +699,327 @@
       wrap.appendChild(fillBtn);
     }
 
-    // mount right after the game's own rate "(1:1.81)"
-    const anchor = row.querySelector('.market-order-rate')
-      || row.querySelector('.market-order-info');
-    if (anchor && anchor.parentNode) {
-      anchor.parentNode.insertBefore(wrap, anchor.nextSibling);
+    // Mount anchored to the row's own native "Fill" action button (fixed
+    // ~10px gap before it) rather than inserting inline after the rate
+    // text. Inline insertion pushed the button after it in the flow, so
+    // its position drifted depending on how wide the give/get resource
+    // text happened to be per row — e.g. "10.000 Plasma Core" vs.
+    // "550.000 Ore" — instead of lining up. Absolute positioning takes it
+    // out of flow entirely, so the preceding text is free to size
+    // naturally and the badge always sits the same distance from Fill.
+    // Real markup: <div class="market-order-row"><div class="market-
+    // order-info">…give/get/rate, our badge…</div><div class="market-
+    // order-actions"><button class="market-btn-small">…Fill</button>
+    // </div></div> — info and actions are separate flex items in the row,
+    // so anchoring off actions' own button by its real class is precise;
+    // the text search is just a fallback if that class ever changes.
+    const nativeFillBtn = row.querySelector('.market-order-actions .market-btn-small')
+      || Array.from(row.querySelectorAll('button'))
+        .find((b) => !b.classList.contains('nxa-fillcalc-btn') && /fill/i.test(b.textContent || ''));
+    if (nativeFillBtn) {
+      if (getComputedStyle(row).position === 'static') row.style.position = 'relative';
+      const rowRect = row.getBoundingClientRect();
+      const fillRect = nativeFillBtn.getBoundingClientRect();
+      wrap.style.position = 'absolute';
+      wrap.style.top = '50%';
+      wrap.style.transform = 'translateY(-50%)';
+      wrap.style.marginLeft = '0';
+      wrap.style.right = `${(rowRect.right - fillRect.left) + 10}px`;
+      row.appendChild(wrap);
+    } else {
+      // fallback: mount right after the game's own rate "(1:1.81)", same
+      // as before, if no native Fill button is found on this row
+      const anchor = row.querySelector('.market-order-rate')
+        || row.querySelector('.market-order-info');
+      if (anchor && anchor.parentNode) {
+        anchor.parentNode.insertBefore(wrap, anchor.nextSibling);
+      }
     }
   }
 
   function annotateAll() {
-    document.querySelectorAll(
+    const rows = document.querySelectorAll(
       '.alliance-trade-tab .market-order-row, .market-browse .market-order-row',
-    ).forEach((row) => {
-      annotateRow(row);
+    );
+    if (!rows.length) return;
+    const groups = new Map();
+    rows.forEach((row) => {
+      const list = row.parentElement;
+      if (!groups.has(list)) groups.set(list, []);
+      groups.get(list).push(row);
+    });
+    const w = weights();
+    groups.forEach((groupRows) => {
+      let maxRatioW = 0;
+      let maxDeltaW = 0;
+      groupRows.forEach((row) => {
+        const give = parseAmount(row.querySelector('.market-order-request .market-resource-amount'));
+        const get = parseAmount(row.querySelector('.market-order-offer .market-resource-amount'));
+        if (!give || !get) return;
+        const wGive = w[norm(give.resource)];
+        const wGet = w[norm(get.resource)];
+        if (wGive == null || wGet == null) return;
+        const inBrowse = !row.closest('.alliance-trade-tab');
+        const rowFeePct = inBrowse ? (parseNetLine(row) ?? feePercent()) : 0;
+        const giveVal = give.amount * wGive;
+        const feeUnknown = inBrowse && rowFeePct == null;
+        const feeMultiplier = (inBrowse && !feeUnknown) ? (1 - rowFeePct / 100) : 1;
+        const getVal = get.amount * wGet * feeMultiplier;
+        const ratio = giveVal > 0 ? getVal / giveVal : 0;
+        const delta = getVal - giveVal;
+        const ratioW = measurePillWidth(`×${ratio.toFixed(2)}`, 'font-size:14px');
+        const deltaW = measurePillWidth(`${delta >= 0 ? '+' : ''}${fmt(delta)}`, 'font-size:14px');
+        if (ratioW > maxRatioW) maxRatioW = ratioW;
+        if (deltaW > maxDeltaW) maxDeltaW = deltaW;
+      });
+      const ratioW = Math.ceil(maxRatioW) + 4;
+      const deltaW = Math.ceil(maxDeltaW) + 4;
+      groupRows.forEach((row) => annotateRow(row, ratioW, deltaW));
+    });
+  }
+
+  // ====================================================================
+  //  Order Book value badges (reworked Browse/Order Book page)
+  //
+  //  Real markup (2026 rework — see the "market-book-level" button in the
+  //  Order Book tab): each price level is one <button class="market-book-
+  //  level">, with exactly 4 direct <span> children in this order:
+  //    1. <span class="market-book-price">1 Silicates → 2,5 Ore</span>
+  //    2. <span>158.408 Silicates</span>   — what clicking this row pays
+  //    3. <span>396.018 Ore</span>          — what clicking this row gives you
+  //    4. <span class="market-book-level-action">…Buy now / Sell now</span>
+  //  Amounts here use "." as a thousands separator and have no icons, so
+  //  they need their own tiny parser (parsePlainAmount) rather than the
+  //  icon-based parseAmount() the old .market-order-row markup used.
+  //
+  //  If this page changes shape again: the only things that matter are
+  //  "does spans[1] hold the pay amount+resource as plain text" and
+  //  "does spans[2] hold the receive amount+resource" — update
+  //  parsePlainAmount()/the span[1]/span[2] indices below, the rest
+  //  (weights, fee, colors, tooltip) is unchanged shared logic.
+  // ====================================================================
+
+  function parsePlainAmount(text) {
+    const s = (text || '').trim();
+    const m = s.match(/^([\d.,]+)\s+(.+)$/);
+    if (!m) return null;
+    const num = parseInt(m[1].replace(/[^\d]/g, ''), 10);
+    const resource = m[2].trim();
+    return Number.isFinite(num) ? { amount: num, resource } : null;
+  }
+
+  // Right edge of the actual RENDERED text inside `el`, via a Range over
+  // its text content — NOT el.getBoundingClientRect().right, which can be
+  // much wider than the visible text if the element's box stretches to
+  // fill a grid/flex column (as .market-book-price does here).
+  function textRight(el) {
+    if (!el) return 0;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const rects = range.getClientRects();
+    if (!rects.length) return 0;
+    return Math.max(...Array.from(rects, (r) => r.right));
+  }
+
+  // Left edge of the actual rendered text inside `el` — same idea as
+  // textRight() but for anchoring to the START of a column (e.g. a date)
+  // instead of the end of one.
+  function textLeft(el) {
+    if (!el) return null;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const rects = range.getClientRects();
+    if (!rects.length) return null;
+    return Math.min(...Array.from(rects, (r) => r.left));
+  }
+
+  // Renders `text` off-screen with the given pill styling to measure its
+  // natural (untruncated) width — used to size a whole column of pills to
+  // whichever row's value is actually the widest, instead of guessing a
+  // fixed px number that can truncate ("×0.9…") once real data comes in.
+  function measurePillWidth(text, extraStyle) {
+    const probe = document.createElement('span');
+    probe.style.cssText = `${PILL};position:absolute;visibility:hidden;left:-9999px;top:-9999px;`
+      + (extraStyle || '');
+    probe.textContent = text;
+    document.body.appendChild(probe);
+    const w = probe.getBoundingClientRect().width;
+    probe.remove();
+    return w;
+  }
+
+  function annotateOrderBookLevel(row, sharedLeftPx, ratioW, deltaW) {
+    const spans = row.querySelectorAll(':scope > span');
+    const paySpan = spans[1];
+    const receiveSpan = spans[2];
+    if (!paySpan || !receiveSpan) return;
+
+    // We no longer touch paySpan's own content at all (see below — the
+    // badge now lives OUTSIDE it), so its text can just be read directly.
+    const give = parsePlainAmount(paySpan.textContent);
+    const get = parsePlainAmount(receiveSpan.textContent);
+    if (!give || !get) {
+      row.querySelectorAll(':scope > .nxa-value-badge').forEach((b) => b.remove());
+      return;
+    }
+
+    const w = weights();
+    const wGive = w[norm(give.resource)];
+    const wGet = w[norm(get.resource)];
+    const rowFeePct = feePercent();  // this page has no per-row net line to prefer
+
+    const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|`
+      + `${JSON.stringify(w)}|${rowFeePct}|${LANG}`;
+    if (row.dataset.nxaValueSig === signature) {
+      // Nothing about the trade itself changed, but the shared column
+      // position/widths can still shift between refreshes (another row's
+      // rate text or value got wider) — keep it in sync without
+      // rebuilding the pills themselves.
+      const existing = row.querySelector(':scope > .nxa-value-badge');
+      if (existing) {
+        existing.style.left = `${sharedLeftPx}px`;
+        const [rp, dp] = existing.querySelectorAll('span');
+        if (rp && dp) { rp.style.width = `${ratioW}px`; dp.style.width = `${deltaW}px`; }
+      }
+      return;
+    }
+    row.dataset.nxaValueSig = signature;
+
+    row.querySelectorAll(':scope > .nxa-value-badge').forEach((b) => b.remove());
+
+    // Positioned absolutely so it's taken completely out of the row's
+    // normal flow — it doesn't add a 5th flex/grid item and doesn't
+    // consume any of the pay cell's own width. The pay cell had a fixed
+    // width with text-overflow:ellipsis, so anything added INSIDE it (an
+    // earlier approach) ate into that budget and truncated the number —
+    // moving it outside fixes that at the root. `sharedLeftPx` (computed
+    // once per list by annotateOrderBook, from the widest actual rate
+    // text among all visible rows) puts every row's badge at the same x,
+    // forming one straight, flush-left column.
+    const wrap = document.createElement('span');
+    wrap.className = 'nxa-value-badge';
+    wrap.style.cssText = 'position:absolute;top:50%;transform:translateY(-50%);'
+      + `left:${sharedLeftPx}px;`
+      + 'display:inline-flex;gap:4px;align-items:center;white-space:nowrap;z-index:1';
+
+    if (wGive == null || wGet == null) {
+      const missing = wGive == null ? give.resource : get.resource;
+      const pill = document.createElement('span');
+      pill.textContent = `? ${missing}`;
+      pill.style.cssText = PILL + ';color:#94a3b8;border-color:#475569;cursor:help';
+      attachTooltip(pill, () => t('noWeightPillTitle', missing));
+      wrap.appendChild(pill);
+    } else {
+      // Same buyer-perspective math as annotateRow(): you pay `give`,
+      // you receive `get` (minus the hub fee, always present here — this
+      // page is never Alliance Trade).
+      const giveVal = give.amount * wGive;
+      const feeUnknown = rowFeePct == null;
+      const feeMultiplier = feeUnknown ? 1 : (1 - rowFeePct / 100);
+      const getVal = get.amount * wGet * feeMultiplier;
+      const ratio = giveVal > 0 ? getVal / giveVal : 0;
+      const delta = getVal - giveVal;
+      const color = colorFor(ratio);
+      const equivGet = delta / wGet;
+      const title = t('buyerTitle', delta, equivGet, get.resource)
+        + (feeUnknown ? t('feeErrorNote') : t('feeAppliedNote', rowFeePct));
+
+      // Dynamic width (computed once per list from the widest actual
+      // value — see annotateOrderBook) + centered text, so every row's
+      // badge takes up exactly the same horizontal space AND is always
+      // wide enough to show the full number, never truncating like a
+      // hardcoded px guess could once real data came in.
+      const ratioPill = document.createElement('span');
+      ratioPill.textContent = `×${ratio.toFixed(2)}`;
+      ratioPill.style.cssText = PILL
+        + `;display:inline-block;width:${ratioW}px;text-align:center;font-size:14px;`
+        + `color:#06121f;background:${color};border-color:${color};cursor:help`;
+      attachTooltip(ratioPill, () => title);
+
+      const pctPill = document.createElement('span');
+      pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
+      pctPill.style.cssText = PILL
+        + `;display:inline-block;width:${deltaW}px;text-align:center;font-size:14px;`
+        + `color:${color};background:transparent;border-color:${color};cursor:help`;
+      attachTooltip(pctPill, () => title);
+
+      // Same "send this trade to the calculator" button the other badges
+      // have. Row itself is a <button> ("Buy now"/"Sell now") — stop
+      // propagation so clicking this never also triggers that. Built
+      // before the pills so it can sit on their LEFT per request.
+      const fillBtn = document.createElement('button');
+      fillBtn.type = 'button';
+      fillBtn.className = 'nxa-fillcalc-btn';
+      fillBtn.textContent = '🧮';
+      fillBtn.style.cssText = PILL
+        + ';color:#38bdf8;background:transparent;border-color:#38bdf8;cursor:pointer;'
+        + 'padding:0 6px;line-height:1.6';
+      attachHoverTooltip(fillBtn, () => t('fillCalcTooltip'));
+      fillBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        fillCalculatorFromTrade(norm(give.resource), give.amount, norm(get.resource));
+      };
+
+      wrap.append(fillBtn, ratioPill, pctPill);
+    }
+
+    if (getComputedStyle(row).position === 'static') row.style.position = 'relative';
+    row.appendChild(wrap);
+  }
+
+  function annotateOrderBook() {
+    const rows = document.querySelectorAll('.market-book-level');
+    if (!rows.length) return;
+    // Group by list container (there is normally only one visible at a
+    // time — Buy offers or Sell offers — but grouping keeps this correct
+    // if that ever changes) so the shared anchor is only ever compared
+    // against rows that actually sit in the same column.
+    const groups = new Map();
+    rows.forEach((row) => {
+      const list = row.parentElement;
+      if (!groups.has(list)) groups.set(list, []);
+      groups.get(list).push(row);
+    });
+    const w = weights();
+    const rowFeePct = feePercent();
+    groups.forEach((groupRows) => {
+      let maxOffset = 0;
+      let maxRatioW = 0;
+      let maxDeltaW = 0;
+      const info = groupRows.map((row) => {
+        const rateSpan = row.querySelector(':scope > span');
+        const rowRect = row.getBoundingClientRect();
+        const offset = textRight(rateSpan) - rowRect.left;
+        if (offset > maxOffset) maxOffset = offset;
+
+        // Same trade math as annotateOrderBookLevel — duplicated here
+        // just to get the actual pill TEXT so its real rendered width
+        // can be measured before any pill exists yet.
+        const spans = row.querySelectorAll(':scope > span');
+        const give = spans[1] && parsePlainAmount(spans[1].textContent);
+        const get = spans[2] && parsePlainAmount(spans[2].textContent);
+        if (give && get) {
+          const wGive = w[norm(give.resource)];
+          const wGet = w[norm(get.resource)];
+          if (wGive != null && wGet != null) {
+            const giveVal = give.amount * wGive;
+            const feeMultiplier = rowFeePct == null ? 1 : (1 - rowFeePct / 100);
+            const getVal = get.amount * wGet * feeMultiplier;
+            const ratio = giveVal > 0 ? getVal / giveVal : 0;
+            const delta = getVal - giveVal;
+            const ratioW = measurePillWidth(`×${ratio.toFixed(2)}`, 'font-size:14px');
+            const deltaW = measurePillWidth(`${delta >= 0 ? '+' : ''}${fmt(delta)}`, 'font-size:14px');
+            if (ratioW > maxRatioW) maxRatioW = ratioW;
+            if (deltaW > maxDeltaW) maxDeltaW = deltaW;
+          }
+        }
+        return row;
+      });
+      const sharedLeftPx = Math.max(0, maxOffset + 6);
+      const ratioW = Math.ceil(maxRatioW) + 4;  // small buffer so text never touches the edge
+      const deltaW = Math.ceil(maxDeltaW) + 4;
+      info.forEach((row) => annotateOrderBookLevel(row, sharedLeftPx, ratioW, deltaW));
     });
   }
 
@@ -711,10 +1034,12 @@
   //  first, get second — followed by "by X → Y" text and the date.
   // ====================================================================
 
-  function annotateHistoryRow(row) {
+  function annotateHistoryRow(row, sharedRightPx, container, ratioW, deltaW) {
     const amounts = row.querySelectorAll('.market-resource-amount');
     if (amounts.length < 2) {
-      row.querySelectorAll('.nxa-history-badge, .nxa-you-marker').forEach((b) => b.remove());
+      (container || row).querySelectorAll(`.nxa-history-badge[data-nxa-row="${row.dataset.nxaRowId || ''}"]`)
+        .forEach((b) => b.remove());
+      row.querySelectorAll('.nxa-you-marker').forEach((b) => b.remove());
       return;
     }
     // Perspective fix: like the original script, we value trades from the
@@ -725,7 +1050,7 @@
     const give = parseAmount(amounts[1]);
     const get = parseAmount(amounts[0]);
     if (!give || !get) {
-      row.querySelectorAll('.nxa-history-badge, .nxa-you-marker').forEach((b) => b.remove());
+      row.querySelectorAll('.nxa-you-marker').forEach((b) => b.remove());
       return;
     }
 
@@ -734,13 +1059,40 @@
     const wGet = w[norm(get.resource)];
     if (wGive == null || wGet == null) return;  // silently skip unknown resources here
 
+    if (!row.dataset.nxaRowId) {
+      row.dataset.nxaRowId = `h${Math.random().toString(36).slice(2)}`;
+    }
+    const rowId = row.dataset.nxaRowId;
+
     // History rows never change once written — this signature check makes
     // almost every later rebuild call a no-op, so a pinned tooltip's
     // element never gets swapped out from under a click.
     const signature = `${give.amount}|${give.resource}|${get.amount}|${get.resource}|${JSON.stringify(w)}|${LANG}`;
-    if (row.dataset.nxaHistSig === signature) return;
+    const existing = container
+      ? container.querySelector(`.nxa-history-badge[data-nxa-row="${rowId}"]`)
+      : row.querySelector('.nxa-history-badge');
+    if (row.dataset.nxaHistSig === signature) {
+      // Trade itself hasn't changed, but the shared date-column anchor,
+      // this row's own vertical position, and the shared pill widths can
+      // all still shift — keep everything synced without a full rebuild.
+      if (existing && sharedRightPx != null) {
+        existing.style.right = `${sharedRightPx}px`;
+        if (container) {
+          const containerRect = container.getBoundingClientRect();
+          const rowRect = row.getBoundingClientRect();
+          existing.style.top = `${(rowRect.top - containerRect.top) + rowRect.height / 2}px`;
+        }
+        const [rp, dp] = existing.querySelectorAll('span');
+        if (rp && dp && ratioW != null && deltaW != null) {
+          rp.style.width = `${ratioW}px`;
+          dp.style.width = `${deltaW}px`;
+        }
+      }
+      return;
+    }
     row.dataset.nxaHistSig = signature;
-    row.querySelectorAll('.nxa-history-badge, .nxa-you-marker').forEach((b) => b.remove());
+    if (existing) existing.remove();
+    row.querySelectorAll('.nxa-you-marker').forEach((b) => b.remove());
 
     const giveVal = give.amount * wGive;
     const getVal = get.amount * wGet;
@@ -752,22 +1104,27 @@
 
     const wrap = document.createElement('span');
     wrap.className = 'nxa-history-badge';
+    wrap.dataset.nxaRow = rowId;
     wrap.style.cssText = 'display:inline-flex;gap:4px;align-items:center;'
       + 'margin-left:6px;vertical-align:middle';
 
-    // headline pills: ×ratio (solid) + profit/loss as % (outline). Absolute
-    // value and the resource-equivalent are still one click/hover away in
-    // the tooltip.
+    // Dynamic width (matching Alliance Trade/Order Book's mechanism and
+    // 14px size) instead of auto-width — with auto-width, only the whole
+    // badge's OUTER edge stayed flush (via the anchor below); the
+    // boundary between the two pills still drifted per row depending on
+    // each value's own text length, so neither pill actually lined up
+    // with the one above/below it.
     const ratioPill = document.createElement('span');
     ratioPill.textContent = `×${ratio.toFixed(2)}`;
     ratioPill.style.cssText = PILL
-      + `;color:#06121f;background:${color};border-color:${color};cursor:help`;
+      + `;font-size:14px;display:inline-block;width:${ratioW}px;text-align:center;`
+      + `color:#06121f;background:${color};border-color:${color};cursor:help`;
     attachTooltip(ratioPill, () => title);
 
     const pctPill = document.createElement('span');
     pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
     pctPill.style.cssText = PILL
-      + `;color:${color};background:transparent;border-color:${color};cursor:help`;
+      + `;font-size:14px;display:inline-block;width:${deltaW}px;text-align:center;color:${color};background:transparent;border-color:${color};cursor:help`;
     attachTooltip(pctPill, () => title);
 
     wrap.append(ratioPill, pctPill);
@@ -786,9 +1143,51 @@
     };
     wrap.appendChild(fillBtn);
 
-    // mount right after the "get" amount, before the "by X → Y" text
-    const getWrapper = amounts[1].parentNode;
-    getWrapper.parentNode.insertBefore(wrap, getWrapper.nextSibling);
+    // Anchored to the date column, mounted on the shared CONTAINER (not
+    // this row) — `right` on an absolutely positioned element is relative
+    // to its containing block's OWN box, and these rows are NOT all the
+    // same width (they size to their own "by X → Y" text). Anchoring each
+    // row's badge to that row's own box meant the same `right` value
+    // still landed at a different absolute x per row. Mounting on the one
+    // shared container and computing `top` from this row's offset within
+    // it sidesteps that entirely — there's only one box width involved.
+    const dateEl = row.querySelector('.market-trade-date');
+    if (dateEl && sharedRightPx != null && container) {
+      if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+      const containerRect = container.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      wrap.style.position = 'absolute';
+      wrap.style.top = `${(rowRect.top - containerRect.top) + rowRect.height / 2}px`;
+      wrap.style.transform = 'translateY(-50%)';
+      wrap.style.marginLeft = '0';
+      wrap.style.right = `${sharedRightPx}px`;
+      container.appendChild(wrap);
+      // The badge (and its 🧮 button) is now a sibling of the row, not a
+      // descendant — the CSS ".market-trade-row:hover .nxa-fillcalc-btn"
+      // reveal rule can only ever match actual descendants, so it quietly
+      // stopped working the moment the badge moved out to the container.
+      // Toggle visibility by hand instead.
+      fillBtn.style.opacity = '0';
+      fillBtn.style.transition = 'opacity .12s';
+      if (!row.dataset.nxaHoverBound) {
+        row.dataset.nxaHoverBound = '1';
+        row.addEventListener('mouseenter', () => {
+          const badge = container.querySelector(`.nxa-history-badge[data-nxa-row="${rowId}"]`);
+          const btn = badge && badge.querySelector('.nxa-fillcalc-btn');
+          if (btn) btn.style.opacity = '1';
+        });
+        row.addEventListener('mouseleave', () => {
+          const badge = container.querySelector(`.nxa-history-badge[data-nxa-row="${rowId}"]`);
+          const btn = badge && badge.querySelector('.nxa-fillcalc-btn');
+          if (btn) btn.style.opacity = '0';
+        });
+      }
+    } else {
+      // fallback: mount right after the "get" amount, before the "by X →
+      // Y" text, same as before, if there's no date element to anchor to
+      const getWrapper = amounts[1].parentNode;
+      getWrapper.parentNode.insertBefore(wrap, getWrapper.nextSibling);
+    }
 
     // "you were involved" marker: the "by Seller → Buyer" text is the one
     // direct-child span of the row that starts with "by " and has no class
@@ -813,9 +1212,59 @@
   }
 
   function annotateHistory() {
-    document.querySelectorAll('.market-trade-history .market-trade-row').forEach((row) => {
-      annotateHistoryRow(row);
+    const container = document.querySelector('.market-trade-history');
+    if (!container) return;
+    const rows = Array.from(container.querySelectorAll('.market-trade-row'));
+    if (!rows.length) return;
+    // Shared anchor: the LEFTMOST absolute page x any row's date text
+    // starts at (i.e. the one produced by the widest/longest date
+    // string) — using that page-x guarantees the badge never overlaps
+    // any date, no matter which row has the longest one. Positioning is
+    // relative to the one shared `container` (see annotateHistoryRow),
+    // not each row's own box, since rows here aren't all the same width
+    // (they size to their own "by X → Y" text) — anchoring per-row still
+    // landed at inconsistent x despite a shared target value.
+    let minDateLeftAbs = null;
+    rows.forEach((row) => {
+      const dateEl = row.querySelector('.market-trade-date');
+      const dl = dateEl ? textLeft(dateEl) : null;
+      if (dl != null && (minDateLeftAbs == null || dl < minDateLeftAbs)) {
+        minDateLeftAbs = dl;
+      }
     });
+    let sharedRightPx = null;
+    if (minDateLeftAbs != null) {
+      const containerRect = container.getBoundingClientRect();
+      sharedRightPx = Math.max(0, (containerRect.right - minDateLeftAbs) + 8);
+    }
+
+    // Same dynamic-width mechanism as Alliance Trade/Order Book: measure
+    // every row's actual pill text and use the widest one for the whole
+    // list, so the pill columns are flush too, not just the badge's
+    // outer edge against the date.
+    const w = weights();
+    let maxRatioW = 0;
+    let maxDeltaW = 0;
+    rows.forEach((row) => {
+      const amounts = row.querySelectorAll('.market-resource-amount');
+      if (amounts.length < 2) return;
+      const give = parseAmount(amounts[1]);
+      const get = parseAmount(amounts[0]);
+      if (!give || !get) return;
+      const wGive = w[norm(give.resource)];
+      const wGet = w[norm(get.resource)];
+      if (wGive == null || wGet == null) return;
+      const ratio = (give.amount * wGive) > 0 ? (get.amount * wGet) / (give.amount * wGive) : 0;
+      const delta = (get.amount * wGet) - (give.amount * wGive);
+      const ratioW = measurePillWidth(`×${ratio.toFixed(2)}`, 'font-size:14px');
+      const deltaW = measurePillWidth(`${delta >= 0 ? '+' : ''}${fmt(delta)}`, 'font-size:14px');
+      if (ratioW > maxRatioW) maxRatioW = ratioW;
+      if (deltaW > maxDeltaW) maxDeltaW = deltaW;
+    });
+    const ratioW = Math.ceil(maxRatioW) + 4;
+    const deltaW = Math.ceil(maxDeltaW) + 4;
+
+    rows.forEach((row) => annotateHistoryRow(row, sharedRightPx, container, ratioW, deltaW));
   }
 
   // ====================================================================
@@ -1446,6 +1895,14 @@
     const browseTab = document.querySelector('.market-browse');
     const filterRow = browseTab && browseTab.querySelector('.market-filter-row');
 
+    // Reworked Order Book page (2026) — .market-browse/.market-filter-row
+    // no longer exist there at all, so it needs its own anchor. Mounted
+    // right above .market-order-book, i.e. just under the tabs bar and
+    // above the Buy/Sell + resource pickers, so it stays put across
+    // switching Buy/Sell or resources (only .market-order-book's OWN
+    // insides change, this element itself persists).
+    const orderBookPage = document.querySelector('.market-order-book');
+
     const createForm = document.querySelector('form.market-create-form');
     const createFormOutsideAlliance = createForm && !createForm.closest('.alliance-trade-tab')
       ? createForm : null;
@@ -1475,6 +1932,7 @@
     let contextTag = null;
     if (orderBtn) { anchor = orderBtn; isAlliance = true; contextTag = 'alliance'; }
     else if (filterRow) { anchor = filterRow; contextTag = 'browse'; }
+    else if (orderBookPage) { anchor = orderBookPage; contextTag = 'orderbook'; }
     else if (createFormOutsideAlliance) { anchor = createFormOutsideAlliance; contextTag = 'create'; }
     else if (hubListContainer) { anchor = hubListContainer; contextTag = 'hub'; }
 
@@ -1496,7 +1954,7 @@
 
     const panel = buildCalcPanel(isAlliance);
     panel.dataset.nxaContext = contextTag;
-    if (contextTag === 'hub' || contextTag === 'create') {
+    if (contextTag === 'hub' || contextTag === 'create' || contextTag === 'orderbook') {
       anchor.parentNode.insertBefore(panel, anchor);
     } else {
       anchor.parentNode.insertBefore(panel, anchor.nextSibling);
@@ -1965,7 +2423,7 @@
   }
 
   function refreshAll() {
-    annotateAll(); annotateHistory(); annotateMyOrders();
+    annotateAll(); annotateHistory(); annotateMyOrders(); annotateOrderBook();
     mountCalculator(); mountOrderFormFillButton(); annotateFleetCargo();
     syncWeightsPanelInputs();
   }
