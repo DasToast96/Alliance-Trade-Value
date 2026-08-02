@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     3.9.3
+// @version     3.9.4
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -1162,13 +1162,22 @@
       wrap.style.marginLeft = '0';
       wrap.style.right = `${sharedRightPx}px`;
       container.appendChild(wrap);
-      // The badge (and its 🧮 button) is now a sibling of the row, not a
-      // descendant — the CSS ".market-trade-row:hover .nxa-fillcalc-btn"
-      // reveal rule can only ever match actual descendants, so it quietly
-      // stopped working the moment the badge moved out to the container.
-      // Toggle visibility by hand instead.
       fillBtn.style.opacity = '0';
       fillBtn.style.transition = 'opacity .12s';
+      // Hover reveal has to work across BOTH the row and the badge now
+      // that the badge is a sibling of the row (not a descendant): moving
+      // the pointer from the row onto the badge visually "leaves" the row
+      // element underneath (they're stacked, not nested), which fired
+      // mouseleave and hid the button right as you tried to click it.
+      // Checking relatedTarget on each side keeps it visible while the
+      // pointer is on either one, and only hides it once it's left both.
+      const showFillBtn = () => { fillBtn.style.opacity = '1'; };
+      const hideFillBtnUnless = (keepIfInside) => (e) => {
+        if (e.relatedTarget && keepIfInside.contains(e.relatedTarget)) return;
+        fillBtn.style.opacity = '0';
+      };
+      wrap.addEventListener('mouseenter', showFillBtn);
+      wrap.addEventListener('mouseleave', hideFillBtnUnless(row));
       if (!row.dataset.nxaHoverBound) {
         row.dataset.nxaHoverBound = '1';
         row.addEventListener('mouseenter', () => {
@@ -1176,8 +1185,9 @@
           const btn = badge && badge.querySelector('.nxa-fillcalc-btn');
           if (btn) btn.style.opacity = '1';
         });
-        row.addEventListener('mouseleave', () => {
+        row.addEventListener('mouseleave', (e) => {
           const badge = container.querySelector(`.nxa-history-badge[data-nxa-row="${rowId}"]`);
+          if (e.relatedTarget && badge && badge.contains(e.relatedTarget)) return;
           const btn = badge && badge.querySelector('.nxa-fillcalc-btn');
           if (btn) btn.style.opacity = '0';
         });
