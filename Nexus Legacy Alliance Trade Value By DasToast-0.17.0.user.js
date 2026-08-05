@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     3.9.4
+// @version     3.10.2
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -435,9 +435,22 @@
     return Number.isFinite(num) ? { amount: num, resource: res } : null;
   }
 
+  // "-74074" -> "-74.074" — same dot-grouping the game itself uses for
+  // big numbers, applied to the millions-scaled figure below.
+  function addThousands(numStr) {
+    const neg = numStr.startsWith('-');
+    const digits = neg ? numStr.slice(1) : numStr;
+    const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return (neg ? '-' : '') + grouped;
+  }
+
   const fmt = (n) => {
     const a = Math.abs(n);
-    if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e7 ? 0 : 1) + 'M';
+    if (a >= 1e6) {
+      const bigEnoughForWholeNumber = a >= 1e7;
+      const str = (n / 1e6).toFixed(bigEnoughForWholeNumber ? 0 : 1);
+      return (bigEnoughForWholeNumber ? addThousands(str) : str) + 'M';
+    }
     if (a >= 1e3) return (n / 1e3).toFixed(a >= 1e4 ? 0 : 1) + 'k';
     return String(Math.round(n));
   };
@@ -589,7 +602,7 @@
     + 'font-family:inherit;font-weight:700;font-size:inherit;line-height:1.6;'
     + 'white-space:nowrap';
 
-  function annotateRow(row, ratioW, deltaW) {
+  function annotateRow(row, ratioW, deltaW, btnGap) {
     // safety guard — this script only ever touches Alliance Trade rows and
     // the regular Market's Browse tab (both share the same row markup),
     // never anything else, even if annotateAll()'s own selector were
@@ -624,6 +637,7 @@
           rp.style.width = `${ratioW}px`;
           dp.style.width = `${deltaW}px`;
         }
+        if (btnGap != null) existing.style.right = `${btnGap}px`;
       }
       return;
     }
@@ -676,7 +690,7 @@
       attachTooltip(ratioPill, () => title);
 
       const pctPill = document.createElement('span');
-      pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
+      pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
       pctPill.style.cssText = PILL
         + `;font-size:14px;display:inline-block;width:${deltaW}px;text-align:center;`
         + `color:${color};background:transparent;border-color:${color};cursor:help`;
@@ -709,22 +723,21 @@
     // naturally and the badge always sits the same distance from Fill.
     // Real markup: <div class="market-order-row"><div class="market-
     // order-info">…give/get/rate, our badge…</div><div class="market-
-    // order-actions"><button class="market-btn-small">…Fill</button>
-    // </div></div> — info and actions are separate flex items in the row,
-    // so anchoring off actions' own button by its real class is precise;
-    // the text search is just a fallback if that class ever changes.
-    const nativeFillBtn = row.querySelector('.market-order-actions .market-btn-small')
+    // order-actions"><button>…Fill</button></div></div> — for your OWN
+    // orders this button says "Cancel" instead (different styling/class),
+    // so anchor to WHATEVER action button is in that container rather
+    // than requiring the Fill-specific class or "fill" text — otherwise
+    // your own orders fell back to the less-precise inline position.
+    const nativeFillBtn = row.querySelector('.market-order-actions button')
       || Array.from(row.querySelectorAll('button'))
-        .find((b) => !b.classList.contains('nxa-fillcalc-btn') && /fill/i.test(b.textContent || ''));
-    if (nativeFillBtn) {
+        .find((b) => !b.classList.contains('nxa-fillcalc-btn') && /fill|cancel/i.test(b.textContent || ''));
+    if (nativeFillBtn && btnGap != null) {
       if (getComputedStyle(row).position === 'static') row.style.position = 'relative';
-      const rowRect = row.getBoundingClientRect();
-      const fillRect = nativeFillBtn.getBoundingClientRect();
       wrap.style.position = 'absolute';
       wrap.style.top = '50%';
       wrap.style.transform = 'translateY(-50%)';
       wrap.style.marginLeft = '0';
-      wrap.style.right = `${(rowRect.right - fillRect.left) + 10}px`;
+      wrap.style.right = `${btnGap}px`;
       row.appendChild(wrap);
     } else {
       // fallback: mount right after the game's own rate "(1:1.81)", same
@@ -752,7 +765,18 @@
     groups.forEach((groupRows) => {
       let maxRatioW = 0;
       let maxDeltaW = 0;
+      let maxBtnGap = 0;
       groupRows.forEach((row) => {
+        const nativeBtn = row.querySelector('.market-order-actions button')
+          || Array.from(row.querySelectorAll('button'))
+            .find((b) => !b.classList.contains('nxa-fillcalc-btn') && /fill|cancel/i.test(b.textContent || ''));
+        if (nativeBtn) {
+          const rowRect = row.getBoundingClientRect();
+          const btnRect = nativeBtn.getBoundingClientRect();
+          const gap = (rowRect.right - btnRect.left) + 10;
+          if (gap > maxBtnGap) maxBtnGap = gap;
+        }
+
         const give = parseAmount(row.querySelector('.market-order-request .market-resource-amount'));
         const get = parseAmount(row.querySelector('.market-order-offer .market-resource-amount'));
         if (!give || !get) return;
@@ -767,14 +791,16 @@
         const getVal = get.amount * wGet * feeMultiplier;
         const ratio = giveVal > 0 ? getVal / giveVal : 0;
         const delta = getVal - giveVal;
+        const equivGet = delta / wGet;
         const ratioW = measurePillWidth(`×${ratio.toFixed(2)}`, 'font-size:14px');
-        const deltaW = measurePillWidth(`${delta >= 0 ? '+' : ''}${fmt(delta)}`, 'font-size:14px');
+        const deltaW = measurePillWidth(`${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`, 'font-size:14px');
         if (ratioW > maxRatioW) maxRatioW = ratioW;
         if (deltaW > maxDeltaW) maxDeltaW = deltaW;
       });
       const ratioW = Math.ceil(maxRatioW) + 4;
       const deltaW = Math.ceil(maxDeltaW) + 4;
-      groupRows.forEach((row) => annotateRow(row, ratioW, deltaW));
+      const btnGap = maxBtnGap > 0 ? Math.ceil(maxBtnGap) : null;
+      groupRows.forEach((row) => annotateRow(row, ratioW, deltaW, btnGap));
     });
   }
 
@@ -937,7 +963,7 @@
       attachTooltip(ratioPill, () => title);
 
       const pctPill = document.createElement('span');
-      pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
+      pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
       pctPill.style.cssText = PILL
         + `;display:inline-block;width:${deltaW}px;text-align:center;font-size:14px;`
         + `color:${color};background:transparent;border-color:${color};cursor:help`;
@@ -1008,8 +1034,9 @@
             const getVal = get.amount * wGet * feeMultiplier;
             const ratio = giveVal > 0 ? getVal / giveVal : 0;
             const delta = getVal - giveVal;
+            const equivGet = delta / wGet;
             const ratioW = measurePillWidth(`×${ratio.toFixed(2)}`, 'font-size:14px');
-            const deltaW = measurePillWidth(`${delta >= 0 ? '+' : ''}${fmt(delta)}`, 'font-size:14px');
+            const deltaW = measurePillWidth(`${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`, 'font-size:14px');
             if (ratioW > maxRatioW) maxRatioW = ratioW;
             if (deltaW > maxDeltaW) maxDeltaW = deltaW;
           }
@@ -1122,7 +1149,7 @@
     attachTooltip(ratioPill, () => title);
 
     const pctPill = document.createElement('span');
-    pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
+      pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
     pctPill.style.cssText = PILL
       + `;font-size:14px;display:inline-block;width:${deltaW}px;text-align:center;color:${color};background:transparent;border-color:${color};cursor:help`;
     attachTooltip(pctPill, () => title);
@@ -1266,8 +1293,9 @@
       if (wGive == null || wGet == null) return;
       const ratio = (give.amount * wGive) > 0 ? (get.amount * wGet) / (give.amount * wGive) : 0;
       const delta = (get.amount * wGet) - (give.amount * wGive);
+      const equivGet = delta / wGet;
       const ratioW = measurePillWidth(`×${ratio.toFixed(2)}`, 'font-size:14px');
-      const deltaW = measurePillWidth(`${delta >= 0 ? '+' : ''}${fmt(delta)}`, 'font-size:14px');
+      const deltaW = measurePillWidth(`${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`, 'font-size:14px');
       if (ratioW > maxRatioW) maxRatioW = ratioW;
       if (deltaW > maxDeltaW) maxDeltaW = deltaW;
     });
@@ -1350,7 +1378,7 @@
     attachTooltip(ratioPill, () => title);
 
     const pctPill = document.createElement('span');
-    pctPill.textContent = `${delta >= 0 ? '+' : ''}${fmt(delta)}`;
+      pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
     pctPill.style.cssText = PILL
       + `;color:${color};background:transparent;border-color:${color};cursor:help`;
     attachTooltip(pctPill, () => title);
