@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     3.10.2
+// @version     3.11.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -654,13 +654,8 @@
 
     if (wGive == null || wGet == null) {
       const missing = wGive == null ? give.resource : get.resource;
-      const pill = document.createElement('span');
-      pill.textContent = `? ${missing}`;
-      pill.style.cssText = PILL + ';color:#94a3b8;border-color:#475569;cursor:help';
-      attachTooltip(pill, () => t('noWeightPillTitle', missing));
-      wrap.appendChild(pill);
+      wrap.appendChild(buildUnknownWeightPill(missing));
     } else {
-      const giveVal = give.amount * wGive;
       // Regular Market fills take a hub fee off what you receive; Alliance
       // Trade has none (0% commission), so only apply it outside that tab.
       // Prefer THIS row's own exact net line ("after N% fee") when present;
@@ -669,48 +664,17 @@
       // gross (un-deducted) value and flag it as unknown instead.
       const feeUnknown = inBrowse && rowFeePct == null;
       const feeMultiplier = (inBrowse && !feeUnknown) ? (1 - rowFeePct / 100) : 1;
-      const getVal = get.amount * wGet * feeMultiplier;
-      const ratio = giveVal > 0 ? getVal / giveVal : 0;
-      const delta = getVal - giveVal;  // buyer's (filler's) profit/loss vs. ×1.00
+      const { ratio, delta, equivGet } = computeTradeValue(give.amount, wGive, get.amount, wGet, feeMultiplier);
       const color = colorFor(ratio);
-      const equivGet = delta / wGet;  // delta expressed as extra/less of the received resource
       const title = t('buyerTitle', delta, equivGet, get.resource)
         + (feeUnknown ? t('feeErrorNote') : (inBrowse ? t('feeAppliedNote', rowFeePct) : ''));
 
-      // headline pills: ×ratio (solid) + profit/loss as % (outline). Fixed,
-      // dynamically-computed width (see annotateAll) so every row's pill in
-      // this list is exactly as wide as the widest actual value — same
-      // mechanism as the Order Book badges, just sized from this list's own
-      // values instead of a shared hardcoded number.
-      const ratioPill = document.createElement('span');
-      ratioPill.textContent = `×${ratio.toFixed(2)}`;
-      ratioPill.style.cssText = PILL
-        + `;font-size:14px;display:inline-block;width:${ratioW}px;text-align:center;`
-        + `color:#06121f;background:${color};border-color:${color};cursor:help`;
-      attachTooltip(ratioPill, () => title);
-
-      const pctPill = document.createElement('span');
-      pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
-      pctPill.style.cssText = PILL
-        + `;font-size:14px;display:inline-block;width:${deltaW}px;text-align:center;`
-        + `color:${color};background:transparent;border-color:${color};cursor:help`;
-      attachTooltip(pctPill, () => title);
-
+      // headline pills: ×ratio (solid) + profit/loss (outline), fixed
+      // dynamically-computed width (see annotateAll) so every row's pill
+      // in this list is exactly as wide as the widest actual value.
+      const { ratioPill, pctPill } = buildValuePills(ratio, equivGet, color, title, ratioW, deltaW);
       wrap.append(ratioPill, pctPill);
-
-      const fillBtn = document.createElement('button');
-      fillBtn.type = 'button';
-      fillBtn.className = 'nxa-fillcalc-btn';
-      fillBtn.textContent = '🧮';
-      fillBtn.style.cssText = PILL
-        + ';color:#38bdf8;background:transparent;border-color:#38bdf8;cursor:pointer;'
-        + 'padding:0 6px;line-height:1.6;margin-left:8px';
-      attachHoverTooltip(fillBtn, () => t('fillCalcTooltip'));
-      fillBtn.onclick = (e) => {
-        e.stopPropagation();
-        fillCalculatorFromTrade(norm(give.resource), give.amount, norm(get.resource));
-      };
-      wrap.appendChild(fillBtn);
+      wrap.appendChild(buildFillCalcBtn(give, get, ';margin-left:8px'));
     }
 
     // Mount anchored to the row's own native "Fill" action button (fixed
@@ -763,10 +727,8 @@
     });
     const w = weights();
     groups.forEach((groupRows) => {
-      let maxRatioW = 0;
-      let maxDeltaW = 0;
       let maxBtnGap = 0;
-      groupRows.forEach((row) => {
+      const entries = groupRows.map((row) => {
         const nativeBtn = row.querySelector('.market-order-actions button')
           || Array.from(row.querySelectorAll('button'))
             .find((b) => !b.classList.contains('nxa-fillcalc-btn') && /fill|cancel/i.test(b.textContent || ''));
@@ -779,26 +741,17 @@
 
         const give = parseAmount(row.querySelector('.market-order-request .market-resource-amount'));
         const get = parseAmount(row.querySelector('.market-order-offer .market-resource-amount'));
-        if (!give || !get) return;
+        if (!give || !get) return null;
         const wGive = w[norm(give.resource)];
         const wGet = w[norm(get.resource)];
-        if (wGive == null || wGet == null) return;
+        if (wGive == null || wGet == null) return null;
         const inBrowse = !row.closest('.alliance-trade-tab');
         const rowFeePct = inBrowse ? (parseNetLine(row) ?? feePercent()) : 0;
-        const giveVal = give.amount * wGive;
         const feeUnknown = inBrowse && rowFeePct == null;
         const feeMultiplier = (inBrowse && !feeUnknown) ? (1 - rowFeePct / 100) : 1;
-        const getVal = get.amount * wGet * feeMultiplier;
-        const ratio = giveVal > 0 ? getVal / giveVal : 0;
-        const delta = getVal - giveVal;
-        const equivGet = delta / wGet;
-        const ratioW = measurePillWidth(`×${ratio.toFixed(2)}`, 'font-size:14px');
-        const deltaW = measurePillWidth(`${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`, 'font-size:14px');
-        if (ratioW > maxRatioW) maxRatioW = ratioW;
-        if (deltaW > maxDeltaW) maxDeltaW = deltaW;
+        return computeTradeValue(give.amount, wGive, get.amount, wGet, feeMultiplier);
       });
-      const ratioW = Math.ceil(maxRatioW) + 4;
-      const deltaW = Math.ceil(maxDeltaW) + 4;
+      const { ratioW, deltaW } = measureMaxPillWidths(entries);
       const btnGap = maxBtnGap > 0 ? Math.ceil(maxBtnGap) : null;
       groupRows.forEach((row) => annotateRow(row, ratioW, deltaW, btnGap));
     });
@@ -874,6 +827,87 @@
     return w;
   }
 
+  // Buyer-perspective value math shared by all three badge types (Alliance
+  // Trade/Browse rows, Order Book levels, Trade History entries): you give
+  // `giveAmt` of a resource weighted `wGive`, you get `getAmt` weighted
+  // `wGet` (optionally reduced by a hub fee). ×1.00 = fair value.
+  function computeTradeValue(giveAmt, wGive, getAmt, wGet, feeMultiplier) {
+    const giveVal = giveAmt * wGive;
+    const getVal = getAmt * wGet * (feeMultiplier == null ? 1 : feeMultiplier);
+    const ratio = giveVal > 0 ? getVal / giveVal : 0;
+    const delta = getVal - giveVal;
+    const equivGet = delta / wGet;  // delta expressed as extra/less of the received resource
+    return { ratio, delta, equivGet };
+  }
+
+  // Measures the widest actual ratio/delta pill text across a whole list of
+  // {ratio, equivGet} entries (skipping nulls for rows with unknown weights
+  // etc.), so every pill in that list can share one fixed, always-wide-
+  // enough column width instead of a hardcoded guess that could truncate.
+  function measureMaxPillWidths(entries) {
+    let maxRatioW = 0;
+    let maxDeltaW = 0;
+    entries.forEach((it) => {
+      if (!it) return;
+      const rw = measurePillWidth(`×${it.ratio.toFixed(2)}`, 'font-size:14px');
+      const dw = measurePillWidth(`${it.equivGet >= 0 ? '+' : ''}${fmt(it.equivGet)}`, 'font-size:14px');
+      if (rw > maxRatioW) maxRatioW = rw;
+      if (dw > maxDeltaW) maxDeltaW = dw;
+    });
+    return { ratioW: Math.ceil(maxRatioW) + 4, deltaW: Math.ceil(maxDeltaW) + 4 };
+  }
+
+  // Builds the ×ratio (solid) + profit/loss (outline) pill pair — same
+  // look everywhere, just sized to whatever fixed width that list computed.
+  function buildValuePills(ratio, equivGet, color, title, ratioW, deltaW) {
+    const ratioPill = document.createElement('span');
+    ratioPill.textContent = `×${ratio.toFixed(2)}`;
+    ratioPill.style.cssText = PILL
+      + `;font-size:14px;display:inline-block;width:${ratioW}px;text-align:center;`
+      + `color:#06121f;background:${color};border-color:${color};cursor:help`;
+    attachTooltip(ratioPill, () => title);
+
+    const pctPill = document.createElement('span');
+    pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
+    pctPill.style.cssText = PILL
+      + `;font-size:14px;display:inline-block;width:${deltaW}px;text-align:center;`
+      + `color:${color};background:transparent;border-color:${color};cursor:help`;
+    attachTooltip(pctPill, () => title);
+
+    return { ratioPill, pctPill };
+  }
+
+  // Builds the 🧮 "send this trade to the calculator" button — same
+  // everywhere except a small styling nuance (Alliance Trade adds a
+  // margin-left since it sits after the pills there, Order Book doesn't
+  // since it's prepended before them there instead).
+  function buildFillCalcBtn(give, get, extraStyle) {
+    const fillBtn = document.createElement('button');
+    fillBtn.type = 'button';
+    fillBtn.className = 'nxa-fillcalc-btn';
+    fillBtn.textContent = '🧮';
+    fillBtn.style.cssText = PILL
+      + ';color:#38bdf8;background:transparent;border-color:#38bdf8;cursor:pointer;'
+      + `padding:0 6px;line-height:1.6${extraStyle || ''}`;
+    attachHoverTooltip(fillBtn, () => t('fillCalcTooltip'));
+    fillBtn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      fillCalculatorFromTrade(norm(give.resource), give.amount, norm(get.resource));
+    };
+    return fillBtn;
+  }
+
+  // The "? resourceName" pill shown when one side's weight isn't set at
+  // all — same across every badge type.
+  function buildUnknownWeightPill(missing) {
+    const pill = document.createElement('span');
+    pill.textContent = `? ${missing}`;
+    pill.style.cssText = PILL + ';color:#94a3b8;border-color:#475569;cursor:help';
+    attachTooltip(pill, () => t('noWeightPillTitle', missing));
+    return pill;
+  }
+
   function annotateOrderBookLevel(row, sharedLeftPx, ratioW, deltaW) {
     const spans = row.querySelectorAll(':scope > span');
     const paySpan = spans[1];
@@ -930,64 +964,30 @@
 
     if (wGive == null || wGet == null) {
       const missing = wGive == null ? give.resource : get.resource;
-      const pill = document.createElement('span');
-      pill.textContent = `? ${missing}`;
-      pill.style.cssText = PILL + ';color:#94a3b8;border-color:#475569;cursor:help';
-      attachTooltip(pill, () => t('noWeightPillTitle', missing));
-      wrap.appendChild(pill);
+      wrap.appendChild(buildUnknownWeightPill(missing));
     } else {
       // Same buyer-perspective math as annotateRow(): you pay `give`,
       // you receive `get` (minus the hub fee, always present here — this
       // page is never Alliance Trade).
-      const giveVal = give.amount * wGive;
       const feeUnknown = rowFeePct == null;
       const feeMultiplier = feeUnknown ? 1 : (1 - rowFeePct / 100);
-      const getVal = get.amount * wGet * feeMultiplier;
-      const ratio = giveVal > 0 ? getVal / giveVal : 0;
-      const delta = getVal - giveVal;
+      const { ratio, delta, equivGet } = computeTradeValue(give.amount, wGive, get.amount, wGet, feeMultiplier);
       const color = colorFor(ratio);
-      const equivGet = delta / wGet;
       const title = t('buyerTitle', delta, equivGet, get.resource)
         + (feeUnknown ? t('feeErrorNote') : t('feeAppliedNote', rowFeePct));
 
       // Dynamic width (computed once per list from the widest actual
-      // value — see annotateOrderBook) + centered text, so every row's
-      // badge takes up exactly the same horizontal space AND is always
-      // wide enough to show the full number, never truncating like a
-      // hardcoded px guess could once real data came in.
-      const ratioPill = document.createElement('span');
-      ratioPill.textContent = `×${ratio.toFixed(2)}`;
-      ratioPill.style.cssText = PILL
-        + `;display:inline-block;width:${ratioW}px;text-align:center;font-size:14px;`
-        + `color:#06121f;background:${color};border-color:${color};cursor:help`;
-      attachTooltip(ratioPill, () => title);
+      // value — see annotateOrderBook) so every row's badge takes up
+      // exactly the same horizontal space AND is always wide enough to
+      // show the full number, never truncating like a hardcoded px guess
+      // could once real data came in.
+      const { ratioPill, pctPill } = buildValuePills(ratio, equivGet, color, title, ratioW, deltaW);
 
-      const pctPill = document.createElement('span');
-      pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
-      pctPill.style.cssText = PILL
-        + `;display:inline-block;width:${deltaW}px;text-align:center;font-size:14px;`
-        + `color:${color};background:transparent;border-color:${color};cursor:help`;
-      attachTooltip(pctPill, () => title);
-
-      // Same "send this trade to the calculator" button the other badges
-      // have. Row itself is a <button> ("Buy now"/"Sell now") — stop
-      // propagation so clicking this never also triggers that. Built
-      // before the pills so it can sit on their LEFT per request.
-      const fillBtn = document.createElement('button');
-      fillBtn.type = 'button';
-      fillBtn.className = 'nxa-fillcalc-btn';
-      fillBtn.textContent = '🧮';
-      fillBtn.style.cssText = PILL
-        + ';color:#38bdf8;background:transparent;border-color:#38bdf8;cursor:pointer;'
-        + 'padding:0 6px;line-height:1.6';
-      attachHoverTooltip(fillBtn, () => t('fillCalcTooltip'));
-      fillBtn.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        fillCalculatorFromTrade(norm(give.resource), give.amount, norm(get.resource));
-      };
-
-      wrap.append(fillBtn, ratioPill, pctPill);
+      // Row itself is a <button> ("Buy now"/"Sell now") — the shared
+      // helper already stops propagation so clicking this never also
+      // triggers that. Prepended before the pills so it sits on their
+      // LEFT per request.
+      wrap.append(buildFillCalcBtn(give, get), ratioPill, pctPill);
     }
 
     if (getComputedStyle(row).position === 'static') row.style.position = 'relative';
@@ -1011,42 +1011,28 @@
     const rowFeePct = feePercent();
     groups.forEach((groupRows) => {
       let maxOffset = 0;
-      let maxRatioW = 0;
-      let maxDeltaW = 0;
-      const info = groupRows.map((row) => {
+      const entries = groupRows.map((row) => {
         const rateSpan = row.querySelector(':scope > span');
         const rowRect = row.getBoundingClientRect();
         const offset = textRight(rateSpan) - rowRect.left;
         if (offset > maxOffset) maxOffset = offset;
 
         // Same trade math as annotateOrderBookLevel — duplicated here
-        // just to get the actual pill TEXT so its real rendered width
+        // just to get the actual pill values so their real rendered width
         // can be measured before any pill exists yet.
         const spans = row.querySelectorAll(':scope > span');
         const give = spans[1] && parsePlainAmount(spans[1].textContent);
         const get = spans[2] && parsePlainAmount(spans[2].textContent);
-        if (give && get) {
-          const wGive = w[norm(give.resource)];
-          const wGet = w[norm(get.resource)];
-          if (wGive != null && wGet != null) {
-            const giveVal = give.amount * wGive;
-            const feeMultiplier = rowFeePct == null ? 1 : (1 - rowFeePct / 100);
-            const getVal = get.amount * wGet * feeMultiplier;
-            const ratio = giveVal > 0 ? getVal / giveVal : 0;
-            const delta = getVal - giveVal;
-            const equivGet = delta / wGet;
-            const ratioW = measurePillWidth(`×${ratio.toFixed(2)}`, 'font-size:14px');
-            const deltaW = measurePillWidth(`${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`, 'font-size:14px');
-            if (ratioW > maxRatioW) maxRatioW = ratioW;
-            if (deltaW > maxDeltaW) maxDeltaW = deltaW;
-          }
-        }
-        return row;
+        if (!give || !get) return null;
+        const wGive = w[norm(give.resource)];
+        const wGet = w[norm(get.resource)];
+        if (wGive == null || wGet == null) return null;
+        const feeMultiplier = rowFeePct == null ? 1 : (1 - rowFeePct / 100);
+        return computeTradeValue(give.amount, wGive, get.amount, wGet, feeMultiplier);
       });
       const sharedLeftPx = Math.max(0, maxOffset + 6);
-      const ratioW = Math.ceil(maxRatioW) + 4;  // small buffer so text never touches the edge
-      const deltaW = Math.ceil(maxDeltaW) + 4;
-      info.forEach((row) => annotateOrderBookLevel(row, sharedLeftPx, ratioW, deltaW));
+      const { ratioW, deltaW } = measureMaxPillWidths(entries);
+      groupRows.forEach((row) => annotateOrderBookLevel(row, sharedLeftPx, ratioW, deltaW));
     });
   }
 
@@ -1121,12 +1107,8 @@
     if (existing) existing.remove();
     row.querySelectorAll('.nxa-you-marker').forEach((b) => b.remove());
 
-    const giveVal = give.amount * wGive;
-    const getVal = get.amount * wGet;
-    const ratio = giveVal > 0 ? getVal / giveVal : 0;
-    const delta = getVal - giveVal;  // buyer's (filler's) profit/loss vs. ×1.00
+    const { ratio, delta, equivGet } = computeTradeValue(give.amount, wGive, get.amount, wGet);
     const color = colorFor(ratio);
-    const equivGet = delta / wGet;  // delta expressed as extra/less of the received resource
     const title = t('buyerTitle', delta, equivGet, get.resource);
 
     const wrap = document.createElement('span');
@@ -1141,33 +1123,10 @@
     // boundary between the two pills still drifted per row depending on
     // each value's own text length, so neither pill actually lined up
     // with the one above/below it.
-    const ratioPill = document.createElement('span');
-    ratioPill.textContent = `×${ratio.toFixed(2)}`;
-    ratioPill.style.cssText = PILL
-      + `;font-size:14px;display:inline-block;width:${ratioW}px;text-align:center;`
-      + `color:#06121f;background:${color};border-color:${color};cursor:help`;
-    attachTooltip(ratioPill, () => title);
-
-    const pctPill = document.createElement('span');
-      pctPill.textContent = `${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`;
-    pctPill.style.cssText = PILL
-      + `;font-size:14px;display:inline-block;width:${deltaW}px;text-align:center;color:${color};background:transparent;border-color:${color};cursor:help`;
-    attachTooltip(pctPill, () => title);
-
+    const { ratioPill, pctPill } = buildValuePills(ratio, equivGet, color, title, ratioW, deltaW);
     wrap.append(ratioPill, pctPill);
 
-    const fillBtn = document.createElement('button');
-    fillBtn.type = 'button';
-    fillBtn.className = 'nxa-fillcalc-btn';
-    fillBtn.textContent = '🧮';
-    fillBtn.style.cssText = PILL
-      + ';color:#38bdf8;background:transparent;border-color:#38bdf8;cursor:pointer;'
-      + 'padding:0 6px;line-height:1.6';
-    attachHoverTooltip(fillBtn, () => t('fillCalcTooltip'));
-    fillBtn.onclick = (e) => {
-      e.stopPropagation();
-      fillCalculatorFromTrade(norm(give.resource), give.amount, norm(get.resource));
-    };
+    const fillBtn = buildFillCalcBtn(give, get);
     wrap.appendChild(fillBtn);
 
     // Anchored to the date column, mounted on the shared CONTAINER (not
@@ -1280,27 +1239,18 @@
     // list, so the pill columns are flush too, not just the badge's
     // outer edge against the date.
     const w = weights();
-    let maxRatioW = 0;
-    let maxDeltaW = 0;
-    rows.forEach((row) => {
+    const entries = rows.map((row) => {
       const amounts = row.querySelectorAll('.market-resource-amount');
-      if (amounts.length < 2) return;
+      if (amounts.length < 2) return null;
       const give = parseAmount(amounts[1]);
       const get = parseAmount(amounts[0]);
-      if (!give || !get) return;
+      if (!give || !get) return null;
       const wGive = w[norm(give.resource)];
       const wGet = w[norm(get.resource)];
-      if (wGive == null || wGet == null) return;
-      const ratio = (give.amount * wGive) > 0 ? (get.amount * wGet) / (give.amount * wGive) : 0;
-      const delta = (get.amount * wGet) - (give.amount * wGive);
-      const equivGet = delta / wGet;
-      const ratioW = measurePillWidth(`×${ratio.toFixed(2)}`, 'font-size:14px');
-      const deltaW = measurePillWidth(`${equivGet >= 0 ? '+' : ''}${fmt(equivGet)}`, 'font-size:14px');
-      if (ratioW > maxRatioW) maxRatioW = ratioW;
-      if (deltaW > maxDeltaW) maxDeltaW = deltaW;
+      if (wGive == null || wGet == null) return null;
+      return computeTradeValue(give.amount, wGive, get.amount, wGet);
     });
-    const ratioW = Math.ceil(maxRatioW) + 4;
-    const deltaW = Math.ceil(maxDeltaW) + 4;
+    const { ratioW, deltaW } = measureMaxPillWidths(entries);
 
     rows.forEach((row) => annotateHistoryRow(row, sharedRightPx, container, ratioW, deltaW));
   }
@@ -1358,12 +1308,8 @@
     row.dataset.nxaMyOrderSig = signature;
     row.querySelectorAll('.nxa-myorder-badge').forEach((b) => b.remove());
 
-    const giveVal = give.amount * wGive;
-    const getVal = get.amount * wGet;
-    const ratio = giveVal > 0 ? getVal / giveVal : 0;
-    const delta = getVal - giveVal;
+    const { ratio, delta, equivGet } = computeTradeValue(give.amount, wGive, get.amount, wGet);
     const color = colorFor(ratio);
-    const equivGet = delta / wGet;
     const title = t('sellerTitle', delta, equivGet, get.resource);
 
     const wrap = document.createElement('span');
