@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     3.11.2
+// @version     3.12.0
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -496,12 +496,7 @@
       + '.market-trade-row:hover .nxa-fillcalc-btn,'
       + '.market-book-level:hover .nxa-fillcalc-btn{opacity:1}'
       + '.nxa-ask-output::placeholder{color:#4ade80;opacity:1}'
-      + '.nxa-ask-rounded::placeholder{color:#facc15;opacity:1}'
-      // Hides the value badge the instant the fill panel opens, via plain
-      // CSS matching — no wait for our debounced JS refresh cycle, which
-      // is what caused the brief flash at the wrong (drifted) position
-      // right after clicking Fill.
-      + '.market-order-row:has(.alliance-fill-panel) .nxa-value-badge{display:none}';
+      + '.nxa-ask-rounded::placeholder{color:#facc15;opacity:1}';
     document.head.appendChild(styleEl);
   }
 
@@ -643,7 +638,12 @@
           dp.style.width = `${deltaW}px`;
         }
         if (btnGap != null) existing.style.right = `${btnGap}px`;
-        existing.style.display = row.querySelector('.alliance-fill-panel') ? 'none' : 'inline-flex';
+        const btn = row.querySelector('.market-order-actions button');
+        if (btn) {
+          const rowRect = row.getBoundingClientRect();
+          const btnRect = btn.getBoundingClientRect();
+          existing.style.top = `${(btnRect.top - rowRect.top) + btnRect.height / 2}px`;
+        }
       }
       return;
     }
@@ -694,26 +694,30 @@
     // Real markup: <div class="market-order-row"><div class="market-
     // order-info">…give/get/rate, our badge…</div><div class="market-
     // order-actions"><button>…Fill</button></div></div> — for your OWN
-    // orders this button says "Cancel" instead (different styling/class),
-    // so anchor to WHATEVER action button is in that container rather
-    // than requiring the Fill-specific class or "fill" text — otherwise
-    // your own orders fell back to the less-precise inline position.
+    // orders this button says "Cancel" instead, and once you've clicked
+    // Fill it becomes "Close" (class market-btn-danger-small) while the
+    // fleet-send panel is open — all different styling/class, so anchor
+    // to WHATEVER action button is in that container rather than
+    // requiring specific text or class.
     const nativeFillBtn = row.querySelector('.market-order-actions button')
       || Array.from(row.querySelectorAll('button'))
-        .find((b) => !b.classList.contains('nxa-fillcalc-btn') && /fill|cancel/i.test(b.textContent || ''));
+        .find((b) => !b.classList.contains('nxa-fillcalc-btn') && /fill|cancel|close/i.test(b.textContent || ''));
     if (nativeFillBtn && btnGap != null) {
       if (getComputedStyle(row).position === 'static') row.style.position = 'relative';
+      // Vertical position is measured fresh against THIS button, not a
+      // blanket "50% of the row" — the row grows a lot taller once the
+      // fleet-send panel opens (Fill -> Close), and 50% of that much
+      // taller box would drift the badge down into the middle of the
+      // panel. The button itself always stays up in the header area
+      // regardless of panel state, so anchoring to IT keeps the badge
+      // there too, with no need to hide it while the panel's open.
+      const rowRect = row.getBoundingClientRect();
+      const btnRect = nativeFillBtn.getBoundingClientRect();
       wrap.style.position = 'absolute';
-      wrap.style.top = '50%';
+      wrap.style.top = `${(btnRect.top - rowRect.top) + btnRect.height / 2}px`;
       wrap.style.transform = 'translateY(-50%)';
       wrap.style.marginLeft = '0';
       wrap.style.right = `${btnGap}px`;
-      // While "Fill" is clicked, the row expands to fit the fleet-send
-      // panel (ship list etc.) — top:50% of that much-taller row would
-      // drift the badge down into the middle of that panel instead of
-      // staying next to the order info, which just looks like noise
-      // floating in the wrong place. Hide it while that panel is open.
-      wrap.style.display = row.querySelector('.alliance-fill-panel') ? 'none' : 'inline-flex';
       row.appendChild(wrap);
     } else {
       // fallback: mount right after the game's own rate "(1:1.81)", same
@@ -2423,6 +2427,36 @@
     mountCalculator(); mountOrderFormFillButton(); annotateFleetCargo();
     syncWeightsPanelInputs();
   }
+
+  // Hides the badge instantly (synchronous with the click, capture phase —
+  // fires before the game's own handler even starts opening the panel) to
+  // avoid a flash at its old position, then watches THIS row specifically
+  // (not the debounced global observer, which can take up to 200ms) for
+  // the action button turning into "Close" and repositions + reveals it
+  // the moment that happens.
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('.market-order-actions button');
+    if (!btn) return;
+    const row = btn.closest('.market-order-row');
+    const badge = row && row.querySelector('.nxa-value-badge');
+    if (!badge) return;
+    badge.style.display = 'none';
+
+    const reveal = () => {
+      const newBtn = row.querySelector('.market-order-actions button');
+      if (newBtn) {
+        const rowRect = row.getBoundingClientRect();
+        const btnRect = newBtn.getBoundingClientRect();
+        badge.style.top = `${(btnRect.top - rowRect.top) + btnRect.height / 2}px`;
+      }
+      badge.style.display = 'inline-flex';
+    };
+    const rowObs = new MutationObserver(() => { rowObs.disconnect(); reveal(); });
+    rowObs.observe(row, { childList: true, subtree: true });
+    // safety net in case nothing about the row actually changes (e.g. the
+    // click didn't open/close anything) — don't leave it hidden forever
+    setTimeout(() => { rowObs.disconnect(); reveal(); }, 500);
+  }, true);
 
   let debounceObs = null;
   new MutationObserver((muts) => {
