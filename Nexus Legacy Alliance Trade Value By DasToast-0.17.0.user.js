@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     3.11.0
+// @version     3.11.1
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -638,6 +638,7 @@
           dp.style.width = `${deltaW}px`;
         }
         if (btnGap != null) existing.style.right = `${btnGap}px`;
+        existing.style.display = row.querySelector('.alliance-fill-panel') ? 'none' : 'inline-flex';
       }
       return;
     }
@@ -702,6 +703,12 @@
       wrap.style.transform = 'translateY(-50%)';
       wrap.style.marginLeft = '0';
       wrap.style.right = `${btnGap}px`;
+      // While "Fill" is clicked, the row expands to fit the fleet-send
+      // panel (ship list etc.) — top:50% of that much-taller row would
+      // drift the badge down into the middle of that panel instead of
+      // staying next to the order info, which just looks like noise
+      // floating in the wrong place. Hide it while that panel is open.
+      wrap.style.display = row.querySelector('.alliance-fill-panel') ? 'none' : 'inline-flex';
       row.appendChild(wrap);
     } else {
       // fallback: mount right after the game's own rate "(1:1.81)", same
