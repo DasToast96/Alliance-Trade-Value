@@ -3,7 +3,7 @@
 // @namespace   nexuslegacy-alliance-tools
 // @author      DasToast
 // @description Annotates Alliance Trade, Market Browse, Create Order, Hub Inventory, and My Orders with a fair-value ratio under your own resource weights, plus an inline Fair Trade Calculator. Standalone — completely independent from the Market Value script.
-// @version     3.11.1
+// @version     3.11.2
 // @match       https://*.nexuslegacy.space/*
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -496,7 +496,12 @@
       + '.market-trade-row:hover .nxa-fillcalc-btn,'
       + '.market-book-level:hover .nxa-fillcalc-btn{opacity:1}'
       + '.nxa-ask-output::placeholder{color:#4ade80;opacity:1}'
-      + '.nxa-ask-rounded::placeholder{color:#facc15;opacity:1}';
+      + '.nxa-ask-rounded::placeholder{color:#facc15;opacity:1}'
+      // Hides the value badge the instant the fill panel opens, via plain
+      // CSS matching — no wait for our debounced JS refresh cycle, which
+      // is what caused the brief flash at the wrong (drifted) position
+      // right after clicking Fill.
+      + '.market-order-row:has(.alliance-fill-panel) .nxa-value-badge{display:none}';
     document.head.appendChild(styleEl);
   }
 
